@@ -140,6 +140,8 @@ app.get('/api/health', (_req: unknown, res: any) => res.json({ status: 'ok' }));
 
 import { createIngestRouter } from './api/ingestRouter';
 import { createProjectDashboardRouter, createProjectErrorUpsertRouter } from './api/projectDashboardRouter';
+import { createAlertManagementRouter } from './api/alertManagementRouter';
+import { startAlertEngine } from './alerts/alertChecker';
 import { createLogsRouterSync } from './api/logsRouter';
 import { createBreaksRouterSync } from './api/breaksRouter';
 import { createDashboardRouterSync } from './api/dashboardRouter';
@@ -453,6 +455,10 @@ app.use('/api/breaks', createProjectDashboardRouter(pool));
 // Per-project error upsert (no auth — called by project services)
 app.use('/api/projects', createProjectErrorUpsertRouter(pool));
 
+// Alert management — alert_rules + alert_history tables
+const alertMgmtRouter = createAlertManagementRouter(pool);
+app.use('/api', alertMgmtRouter);
+
 // GET /api/projects?category=... — list projects from DB
 app.get('/api/projects', async (req: any, res: any) => {
   try {
@@ -535,6 +541,8 @@ const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const server = app.listen(PORT, () => {
   console.log(`[Server] listening on http://localhost:${PORT}`);
   console.log(`[Server] API docs at http://localhost:${PORT}/api/docs`);
+  // Start alert engine after server is up
+  startAlertEngine(pool).catch(err => console.error('[AlertEngine] failed to start:', err));
 });
 
 // Attach native ws upgrade to the WebSocket server

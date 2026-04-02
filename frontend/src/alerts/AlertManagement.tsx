@@ -51,10 +51,7 @@ interface RuleDraft {
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
-const MOCK_PROJECTS = [
-  'AI Document Processor', 'Vision Analytics', 'RAG Pipeline', 'Fraud Detection',
-  'Customer Churn Model', 'NLP Classifier', 'Recommendation Engine', 'Data Ingestion',
-];
+const MOCK_PROJECTS: string[] = []; // replaced by DB fetch — see useProjects()
 
 const MOCK_RULES: AlertRule[] = [
   { id: '1', name: 'High Failure Rate — Prod', project: 'AI Document Processor', alertType: 'High Failure', threshold: 5, window: '1 minute', channels: ['Email', 'Slack'], status: 'active' },
@@ -74,7 +71,7 @@ const MOCK_TRIGGERED: TriggeredAlert[] = [
 ];
 
 const EMPTY_DRAFT: RuleDraft = {
-  name: '', project: MOCK_PROJECTS[0], alertType: 'High Failure',
+  name: '', project: '', alertType: 'High Failure',
   threshold: '5', window: '1 minute', channels: [], status: 'active',
 };
 
@@ -135,6 +132,19 @@ const ALERT_TYPE_STYLE: Record<AlertType, { bg: string; color: string }> = {
 const CHANNEL_ICONS: Record<ChannelType, string> = {
   Email: '📧', Slack: '💬', Teams: '🟦', Webhook: '🔗',
 };
+
+// ─── useProjects hook ─────────────────────────────────────────────────────────
+
+function useProjects(): string[] {
+  const [projects, setProjects] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    fetch('/api/projects')
+      .then(r => r.json())
+      .then((rows: { name: string }[]) => setProjects(rows.map(r => r.name).sort()))
+      .catch(console.error);
+  }, []);
+  return projects;
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -204,14 +214,25 @@ function ChannelMultiSelect({ selected, onChange }: { selected: ChannelType[]; o
 
 // ─── Create / Edit Rule Modal ─────────────────────────────────────────────────
 
-function RuleModal({ initial, onSave, onClose }: {
+function RuleModal({ initial, onSave, onClose, projects }: {
   initial: RuleDraft | null;
   onSave: (d: RuleDraft) => void;
   onClose: () => void;
+  projects: string[];
 }) {
   const [draft, setDraft] = useState<RuleDraft>(initial ?? { ...EMPTY_DRAFT });
   const set = (patch: Partial<RuleDraft>) => setDraft(d => ({ ...d, ...patch }));
   const isHighFailure = draft.alertType === 'High Failure';
+
+  function setAlertType(type: AlertType) {
+    setDraft(d => ({
+      ...d,
+      alertType: type,
+      // reset to defaults when switching to High Failure so fields are never empty
+      threshold: type === 'High Failure' ? (d.threshold || '5') : d.threshold,
+      window: type === 'High Failure' ? (d.window || '1 minute') : d.window,
+    }));
+  }
 
   return (
     <div onClick={onClose} style={{
@@ -245,14 +266,14 @@ function RuleModal({ initial, onSave, onClose }: {
           <div>
             <Label text="Project Name" />
             <select value={draft.project} onChange={e => set({ project: e.target.value })} style={{ ...selectStyle, width: '100%' }}>
-              {MOCK_PROJECTS.map(p => <option key={p} value={p}>{p}</option>)}
+              {projects.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
 
           {/* Alert Type */}
           <div>
             <Label text="Alert Type" />
-            <select value={draft.alertType} onChange={e => set({ alertType: e.target.value as AlertType })} style={{ ...selectStyle, width: '100%' }}>
+            <select value={draft.alertType} onChange={e => setAlertType(e.target.value as AlertType)} style={{ ...selectStyle, width: '100%' }}>
               <option value="High Failure">High Failure</option>
               <option value="New Error">New Error</option>
               <option value="Regression">Regression</option>
@@ -317,12 +338,13 @@ function RuleModal({ initial, onSave, onClose }: {
 
 // ─── Tab: Alert Rules ─────────────────────────────────────────────────────────
 
-function AlertRulesTab({ rules, onEdit, onDelete, onToggle, onCreateRule }: {
+function AlertRulesTab({ rules, onEdit, onDelete, onToggle, onCreateRule, projects }: {
   rules: AlertRule[];
   onEdit: (r: AlertRule) => void;
   onDelete: (id: string) => void;
   onToggle: (id: string) => void;
   onCreateRule: () => void;
+  projects: string[];
 }) {
   const [projectFilter, setProjectFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -349,7 +371,7 @@ function AlertRulesTab({ rules, onEdit, onDelete, onToggle, onCreateRule }: {
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} style={selectStyle} aria-label="Filter by project">
           <option value="">All Projects</option>
-          {MOCK_PROJECTS.map(p => <option key={p} value={p}>{p}</option>)}
+          {projects.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={selectStyle} aria-label="Filter by alert type">
           <option value="">All Types</option>
@@ -439,7 +461,7 @@ function AlertRulesTab({ rules, onEdit, onDelete, onToggle, onCreateRule }: {
 
 // ─── Tab: Triggered Alerts ────────────────────────────────────────────────────
 
-function TriggeredAlertsTab({ alerts }: { alerts: TriggeredAlert[] }) {
+function TriggeredAlertsTab({ alerts, projects }: { alerts: TriggeredAlert[]; projects: string[] }) {
   const [projectFilter, setProjectFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [fromDate, setFromDate] = useState('');
@@ -471,7 +493,7 @@ function TriggeredAlertsTab({ alerts }: { alerts: TriggeredAlert[] }) {
       }}>
         <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} style={selectStyle} aria-label="Filter by project">
           <option value="">All Projects</option>
-          {MOCK_PROJECTS.map(p => <option key={p} value={p}>{p}</option>)}
+          {projects.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={selectStyle} aria-label="Filter by alert type">
           <option value="">All Types</option>
@@ -500,14 +522,14 @@ function TriggeredAlertsTab({ alerts }: { alerts: TriggeredAlert[] }) {
               <TH>Triggered Time</TH>
               <TH>Project</TH>
               <TH>Error</TH>
-              <TH>Error Hash</TH>
               <TH>Rule Triggered</TH>
+
               <TH>Alert Type</TH>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={6} style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+              <tr><td colSpan={5} style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
                 <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
                 No triggered alerts found
               </td></tr>
@@ -528,9 +550,6 @@ function TriggeredAlertsTab({ alerts }: { alerts: TriggeredAlert[] }) {
                 <td style={{ padding: '11px 14px', color: '#f87171', fontFamily: 'ui-monospace,monospace', fontSize: 11, maxWidth: 260, wordBreak: 'break-word' }}>
                   {a.error}
                 </td>
-                <td style={{ padding: '11px 14px', fontFamily: 'ui-monospace,monospace', fontSize: 11, color: 'var(--text-muted)' }}>
-                  {a.errorHash}
-                </td>
                 <td style={{ padding: '11px 14px', fontSize: 12, color: 'var(--text-subtle)' }}>{a.ruleTriggered}</td>
                 <td style={{ padding: '11px 14px' }}><AlertTypeBadge type={a.alertType} /></td>
               </tr>
@@ -546,44 +565,100 @@ function TriggeredAlertsTab({ alerts }: { alerts: TriggeredAlert[] }) {
 
 export function AlertManagement({ role }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('rules');
-  const [rules, setRules] = useState<AlertRule[]>(MOCK_RULES);
-  const [triggered] = useState<TriggeredAlert[]>(MOCK_TRIGGERED);
+  const [rules, setRules] = useState<AlertRule[]>([]);
+  const [triggered, setTriggered] = useState<TriggeredAlert[]>([]);
+  const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<AlertRule | null>(null);
+  const projects = useProjects();
 
   const canEdit = role === 'admin' || role === 'developer';
+
+  // ── Map DB row → AlertRule ──────────────────────────────────────────────────
+  function mapRule(row: any): AlertRule {
+    const windowMap: Record<number, WindowOption> = { 1: '1 minute', 5: '5 minutes', 15: '15 minutes' };
+    return {
+      id: row.id,
+      name: row.rule_name,
+      project: row.project_name,
+      alertType: row.alert_type as AlertType,
+      threshold: row.threshold ?? null,
+      window: row.window_minutes ? (windowMap[row.window_minutes] ?? `${row.window_minutes} minutes`) as WindowOption : null,
+      channels: [],
+      status: row.is_active ? 'active' : 'inactive',
+    };
+  }
+
+  // ── Map DB row → TriggeredAlert ─────────────────────────────────────────────
+  function mapTriggered(row: any): TriggeredAlert {
+    return {
+      id: row.id,
+      triggeredAt: row.triggered_at,
+      project: row.project_name,
+      error: row.error ?? '',
+      errorHash: '',
+      ruleTriggered: row.rule_name ?? '—',
+      alertType: row.alert_type as AlertType,
+      status: 'sent',
+    };
+  }
+
+  function loadRules() {
+    fetch('/api/alert-rules')
+      .then(r => r.json())
+      .then((rows: any[]) => setRules(rows.map(mapRule)))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }
+
+  function loadTriggered() {
+    fetch('/api/alert-history')
+      .then(r => r.json())
+      .then((rows: any[]) => setTriggered(rows.map(mapTriggered)))
+      .catch(console.error);
+  }
+
+  React.useEffect(() => {
+    loadRules();
+    loadTriggered();
+  }, []);
 
   function openCreate() { setEditTarget(null); setModalOpen(true); }
   function openEdit(rule: AlertRule) { setEditTarget(rule); setModalOpen(true); }
 
-  function handleSave(draft: RuleDraft) {
+  async function handleSave(draft: RuleDraft) {
+    const windowMinMap: Record<WindowOption, number> = { '1 minute': 1, '5 minutes': 5, '15 minutes': 15 };
+    const body = {
+      rule_name: draft.name,
+      project_name: draft.project,
+      alert_type: draft.alertType,
+      threshold: draft.alertType === 'High Failure' ? Number(draft.threshold) : null,
+      window_minutes: draft.alertType === 'High Failure' ? windowMinMap[draft.window] : null,
+      is_active: draft.status === 'active',
+    };
+
     if (editTarget) {
-      setRules(rs => rs.map(r => r.id === editTarget.id ? {
-        ...r, name: draft.name, project: draft.project, alertType: draft.alertType,
-        threshold: draft.alertType === 'High Failure' ? Number(draft.threshold) : null,
-        window: draft.alertType === 'High Failure' ? draft.window : null,
-        channels: draft.channels, status: draft.status,
-      } : r));
+      await fetch(`/api/alert-rules/${editTarget.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
     } else {
-      const newRule: AlertRule = {
-        id: String(Date.now()), name: draft.name, project: draft.project,
-        alertType: draft.alertType,
-        threshold: draft.alertType === 'High Failure' ? Number(draft.threshold) : null,
-        window: draft.alertType === 'High Failure' ? draft.window : null,
-        channels: draft.channels, status: draft.status,
-      };
-      setRules(rs => [newRule, ...rs]);
+      await fetch('/api/alert-rules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
     }
     setModalOpen(false);
+    loadRules();
   }
 
-  function handleDelete(id: string) {
+  async function handleDelete(id: string) {
     if (!window.confirm('Delete this alert rule?')) return;
-    setRules(rs => rs.filter(r => r.id !== id));
+    await fetch(`/api/alert-rules/${id}`, { method: 'DELETE' });
+    loadRules();
   }
 
-  function handleToggle(id: string) {
-    setRules(rs => rs.map(r => r.id === id ? { ...r, status: r.status === 'active' ? 'inactive' : 'active' } : r));
+  async function handleToggle(id: string) {
+    await fetch(`/api/alert-rules/${id}/toggle`, { method: 'PATCH' });
+    loadRules();
   }
 
   const TABS: { id: TabId; label: string; icon: string }[] = [
@@ -592,7 +667,6 @@ export function AlertManagement({ role }: Props) {
   ];
 
   const activeCount = rules.filter(r => r.status === 'active').length;
-  const failedCount = triggered.filter(t => t.status === 'failed').length;
 
   return (
     <div data-testid="alert-management">
@@ -606,12 +680,11 @@ export function AlertManagement({ role }: Props) {
       </div>
 
       {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 24 }}>
         {[
-          { label: 'Total Rules',      value: rules.length,    color: '#6366f1', icon: '📋' },
-          { label: 'Active Rules',     value: activeCount,     color: '#10b981', icon: '✅' },
-          { label: 'Triggered Today',  value: triggered.length, color: '#f59e0b', icon: '⚡' },
-          { label: 'Failed Alerts',    value: failedCount,     color: '#ef4444', icon: '❌' },
+          { label: 'Total Rules',     value: rules.length,     color: '#6366f1', icon: '📋' },
+          { label: 'Active Rules',    value: activeCount,      color: '#10b981', icon: '✅' },
+          { label: 'Triggered Today', value: triggered.length, color: '#f59e0b', icon: '⚡' },
         ].map(s => (
           <div key={s.label} style={{
             background: 'var(--surface)', border: '1px solid var(--card-border)',
@@ -647,28 +720,36 @@ export function AlertManagement({ role }: Props) {
 
       {/* Tab content */}
       {activeTab === 'rules' && (
-        <AlertRulesTab
-          rules={rules}
-          onEdit={canEdit ? openEdit : () => {}}
-          onDelete={canEdit ? handleDelete : () => {}}
-          onToggle={canEdit ? handleToggle : () => {}}
-          onCreateRule={canEdit ? openCreate : () => {}}
-        />
+        loading ? (
+          <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>Loading…</div>
+        ) : (
+          <AlertRulesTab
+            rules={rules}
+            onEdit={canEdit ? openEdit : () => {}}
+            onDelete={canEdit ? handleDelete : () => {}}
+            onToggle={canEdit ? handleToggle : () => {}}
+            onCreateRule={canEdit ? openCreate : () => {}}
+            projects={projects}
+          />
+        )
       )}
-      {activeTab === 'triggered' && <TriggeredAlertsTab alerts={triggered} />}
+      {activeTab === 'triggered' && <TriggeredAlertsTab alerts={triggered} projects={projects} />}
 
       {/* Modal */}
       {modalOpen && (
         <RuleModal
           initial={editTarget ? {
-            name: editTarget.name, project: editTarget.project,
+            name: editTarget.name,
+            project: editTarget.project,
             alertType: editTarget.alertType,
             threshold: editTarget.threshold != null ? String(editTarget.threshold) : '5',
             window: editTarget.window ?? '1 minute',
-            channels: editTarget.channels, status: editTarget.status,
+            channels: editTarget.channels,
+            status: editTarget.status,
           } : null}
           onSave={handleSave}
           onClose={() => setModalOpen(false)}
+          projects={projects}
         />
       )}
     </div>

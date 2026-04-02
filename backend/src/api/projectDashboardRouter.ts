@@ -17,16 +17,22 @@ import { Pool } from 'pg';
 
 /**
  * Returns all project table names from information_schema.
- * We exclude the meta-tables (projects, users, alert_rules, etc.) by
- * checking that the table has a `project_name` column.
+ * Only includes tables that have both `project_name` AND `error_status` columns,
+ * ensuring the error-tracking queries don't fail on older tables.
  */
 async function getProjectTables(pool: Pool): Promise<string[]> {
   const { rows } = await pool.query<{ table_name: string }>(`
-    SELECT DISTINCT c.table_name
+    SELECT c.table_name
     FROM information_schema.columns c
     WHERE c.table_schema = 'public'
       AND c.column_name = 'project_name'
       AND c.table_name != 'Image_Forensics'
+      AND c.table_name IN (
+        SELECT table_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND column_name = 'error_status'
+      )
     ORDER BY c.table_name
   `);
   return rows.map((r) => r.table_name);
