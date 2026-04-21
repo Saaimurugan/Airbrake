@@ -72,10 +72,20 @@ export function BreaksList() {
   const [result, setResult] = useState<BreaksPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [projectFilter, setProjectFilter] = useState('');
+  const [projects, setProjects] = useState<string[]>([]);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [appliedFrom, setAppliedFrom] = useState('');
   const [appliedTo, setAppliedTo] = useState('');
+
+  // Fetch project list from DB
+  useEffect(() => {
+    fetch('/api/projects')
+      .then(r => r.json())
+      .then((rows: { name: string }[]) => setProjects(rows.map(r => r.name).sort()))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,16 +93,17 @@ export function BreaksList() {
     const params = new URLSearchParams({
       page: String(page),
       limit: String(LIMIT),
-      ...(statusFilter ? { status: statusFilter } : {}),
-      ...(appliedFrom ? { from: appliedFrom } : {}),
-      ...(appliedTo   ? { to:   appliedTo   } : {}),
+      ...(statusFilter  ? { status:  statusFilter  } : {}),
+      ...(projectFilter ? { project: projectFilter } : {}),
+      ...(appliedFrom   ? { from:    appliedFrom   } : {}),
+      ...(appliedTo     ? { to:      appliedTo     } : {}),
     });
     fetch(`/api/breaks/grouped?${params}`)
       .then(r => r.json())
       .then(d => { if (!cancelled) { setResult(d as BreaksPage); setLoading(false); } })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [page, statusFilter, appliedFrom, appliedTo]);
+  }, [page, statusFilter, projectFilter, appliedFrom, appliedTo]);
 
   const totalPages = result ? Math.ceil(result.total / LIMIT) : 1;
 
@@ -125,11 +136,17 @@ export function BreaksList() {
         background: 'var(--surface)', border: '1px solid var(--card-border)', borderRadius: 8,
         alignItems: 'center',
       }}>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Status:</span>
+        <select value={projectFilter}
+          onChange={e => { setProjectFilter(e.target.value); setPage(1); }}
+          aria-label="Project" style={selectStyle}>
+          <option value="">All Projects</option>
+          {projects.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+
         <select data-testid="filter-status" value={statusFilter}
           onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
           aria-label="Status" style={selectStyle}>
-          <option value="">All statuses</option>
+          <option value="">All Statuses</option>
           <option value="new">New</option>
           <option value="existing">Existing</option>
           <option value="regression">Regression</option>

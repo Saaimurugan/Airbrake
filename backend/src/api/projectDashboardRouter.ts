@@ -194,7 +194,8 @@ export function createProjectDashboardRouter(pool: Pool) {
 
       const page  = Math.max(1, parseInt(req.query.page  ?? '1',  10) || 1);
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit ?? '20', 10) || 20));
-      const statusFilter: string = req.query.status ?? '';
+      const statusFilter: string  = req.query.status  ?? '';
+      const projectFilter: string = req.query.project ?? '';
       const from: string = req.query.from ?? '';
       const to:   string = req.query.to   ?? '';
 
@@ -204,8 +205,16 @@ export function createProjectDashboardRouter(pool: Pool) {
       if (to)   dateWhere += ` AND timestamp <= '${to.replace(/'/g, "''")}'`;
 
       // UNION ALL across all tables — only active (non-resolved) errors
-      const unionParts = tables.map(
-        (t) => `SELECT project_name, error, error_detail, error_hash, timestamp, error_status, reopened_at FROM "${t}" WHERE error IS NOT NULL AND error <> '' AND error_status IN ('open', 'reopened')${dateWhere}`,
+      // If project filter set, only query that project's table
+      const filteredTables = projectFilter
+        ? tables.filter(t => t.toLowerCase() === projectFilter.toLowerCase().replace(/ /g, '_') ||
+                             t.toLowerCase().replace(/_/g, ' ') === projectFilter.toLowerCase())
+        : tables;
+
+      if (filteredTables.length === 0) return res.json({ data: [], total: 0, page, limit });
+
+      const unionParts = filteredTables.map(
+        (t) => `SELECT project_name, error, error_detail, error_hash, failure_count, timestamp, error_status, reopened_at FROM "${t}" WHERE error IS NOT NULL AND error <> '' AND error_status IN ('open', 'reopened')${dateWhere}`,
       );
       const union = unionParts.join('\nUNION ALL\n');
 
@@ -215,21 +224,23 @@ export function createProjectDashboardRouter(pool: Pool) {
           project_name,
           error                                        AS error_message,
           COALESCE(error_hash, MD5(LOWER(TRIM(error)))) AS error_hash,
-          COUNT(*)::int                                AS occurrence_count,
+          SUM(failure_count)::int                      AS occurrence_count,
           MIN(timestamp)                               AS first_seen,
           COALESCE(MAX(reopened_at), MAX(timestamp))   AS last_seen,
           CASE
             WHEN BOOL_OR(error_status = 'reopened') THEN 'regression'
-            WHEN COUNT(*) = 1 THEN 'new'
+            WHEN SUM(failure_count) = 1 THEN 'new'
             ELSE 'existing'
           END AS status
         FROM (${union}) AS all_errors
         GROUP BY project_name, error, COALESCE(error_hash, MD5(LOWER(TRIM(error))))
       `;
 
-      // Apply optional status filter
-      const statusWhere = statusFilter ? `WHERE status = '${statusFilter.replace(/'/g, "''")}'` : '';
-
+      // Apply optional status and project filters
+      const conditions: string[] = [];
+      if (statusFilter)  conditions.push(`status = '${statusFilter.replace(/'/g, "''")}'`);
+      if (projectFilter) conditions.push(`project_name = '${projectFilter.replace(/'/g, "''")}'`);
+      const statusWhere = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
       const countRes = await pool.query(`SELECT COUNT(*) FROM (${grouped}) AS g ${statusWhere}`);
       const total = parseInt(countRes.rows[0].count, 10);
 
@@ -264,7 +275,6 @@ export function createProjectDashboardRouter(pool: Pool) {
  *  - Existing row with error_status='open' or 'reopened' → do NOT increment failure_count, just update timestamp
  */
 export function createProjectErrorUpsertRouter(pool: Pool) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const express = require('express');
   const router = express.Router();
 
@@ -273,78 +283,62 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
       const projectName: string = decodeURIComponent(req.params.name);
       const tableName = projectName.replace(/ /g, '_');
 
-      // Verify table exists
       const { rows: tableCheck } = await pool.query(
-        `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
-        [tableName],
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
+        ['public', tableName],
       );
       if (tableCheck.length === 0) {
-        return res.status(404).json({ error: `No table found for project: ${projectName}` });
+        return res.status(404).json({ error: 'No table found for project: ' + projectName });
       }
 
       const body = req.body as Record<string, unknown>;
       const fileName: string = String(body.file_name ?? '');
-      const errorMsg: string = String(body.error ?? '');
-
-      if (!errorMsg) {
-        return res.status(400).json({ error: 'error field is required' });
-      }
-
-      // Derive short error from error_detail (last line before first colon), fallback to errorMsg
       const errorDetail: string | undefined = (body.error_detail as string | undefined)?.trim() || undefined;
-      let shortError = errorMsg;
+
+      // Derive short error from error_detail (last line before first colon)
+      // If no error_detail, fall back to the 'error' field
+      let shortError = String(body.error ?? '').trim();
       if (errorDetail) {
         const lines = errorDetail.split('\n').map((l: string) => l.trim()).filter(Boolean);
-        const lastLine = lines[lines.length - 1] ?? errorMsg;
-        shortError = lastLine.split(':')[0].trim() || errorMsg;
+        const lastLine = lines[lines.length - 1] ?? '';
+        const derived = lastLine.split(':')[0].trim();
+        if (derived) shortError = derived;
       }
 
-      // Compute error_hash from error (short form) always — for consistent grouping/regression
+      if (!shortError) return res.status(400).json({ error: 'error or error_detail is required' });
+
       const hashSource = shortError.toLowerCase().trim();
-      const errorHash: string = typeof body.error_hash === 'string' && body.error_hash
-        ? body.error_hash
-        : require('crypto').createHash('md5').update(hashSource).digest('hex');
+      const errorHash: string = require('crypto').createHash('md5').update(hashSource).digest('hex');
 
-      // Check for existing row with this error_hash
-      const { rows: existing } = await pool.query(
-        `SELECT id, error_status, failure_count FROM "${tableName}" WHERE error_hash = $1 LIMIT 1`,
-        [errorHash],
+      const updateResult = await pool.query(
+        'UPDATE "' + tableName + '" SET failure_count = failure_count + 1, file_name = $2, timestamp = NOW(), ' +
+        'error_detail = COALESCE($5, error_detail), ' +
+        'error_status = CASE WHEN error_status = $3 THEN $4 ELSE error_status END, ' +
+        'reopened_at = CASE WHEN error_status = $3 THEN NOW() ELSE reopened_at END, ' +
+        'resolved_at = CASE WHEN error_status = $3 THEN NULL ELSE resolved_at END ' +
+        'WHERE error_hash = $1 RETURNING id, error_status, failure_count',
+        [errorHash, fileName, 'resolved', 'reopened', errorDetail ?? null],
       );
 
-      if (existing.length === 0) {
-        // ── New error: INSERT ──
-        await pool.query(
-          `INSERT INTO "${tableName}" (project_name, file_name, error, error_hash, failure_count, success_count, error_status, timestamp)
-           VALUES ($1, $2, $3, $4, 1, 0, 'open', NOW())`,
-          [projectName, fileName, errorMsg, errorHash],
-        );
-        return res.json({ action: 'inserted', error_status: 'open', failure_count: 1 });
+      if (updateResult.rowCount && updateResult.rowCount > 0) {
+        const r = updateResult.rows[0];
+        return res.json({
+          action: r.error_status === 'reopened' ? 'reopened' : 'updated',
+          error_status: r.error_status,
+          failure_count: r.failure_count,
+        });
       }
 
-      const row = existing[0];
-
-      if (row.error_status === 'resolved') {
-        // ── Regression: reopen ──
-        await pool.query(
-          `UPDATE "${tableName}"
-           SET error_status = 'reopened',
-               failure_count = failure_count + 1,
-               reopened_at = NOW(),
-               resolved_at = NULL,
-               timestamp = NOW(),
-               file_name = $2
-           WHERE error_hash = $1`,
-          [errorHash, fileName],
-        );
-        return res.json({ action: 'reopened', error_status: 'reopened', failure_count: row.failure_count + 1 });
-      }
-
-      // ── Already open/reopened: just update timestamp, no count change ──
-      await pool.query(
-        `UPDATE "${tableName}" SET timestamp = NOW(), file_name = $2 WHERE error_hash = $1`,
-        [errorHash, fileName],
+      const insertResult = await pool.query(
+        'INSERT INTO "' + tableName + '" (id, project_name, file_name, timestamp, success_count, failure_count, ' +
+        'error, error_detail, error_hash, error_status) ' +
+        'VALUES (gen_random_uuid(), $1, $2, NOW(), 0, 1, $3, $4, $5, $6) ' +
+        'RETURNING id, error_status, failure_count',
+        [projectName, fileName, shortError, errorDetail ?? null, errorHash, 'open'],
       );
-      return res.json({ action: 'unchanged', error_status: row.error_status, failure_count: row.failure_count });
+
+      const inserted = insertResult.rows[0];
+      return res.json({ action: 'inserted', error_status: inserted.error_status, failure_count: inserted.failure_count });
 
     } catch (err) {
       console.error('[Projects] error upsert failed:', err);
@@ -352,16 +346,14 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
     }
   });
 
-  // PATCH /api/projects/:name/errors/:hash/resolve — manually resolve an error
   router.patch('/:name/errors/:hash/resolve', async (req: any, res: any) => {
     try {
       const projectName: string = decodeURIComponent(req.params.name);
       const tableName = projectName.replace(/ /g, '_');
       const errorHash: string = req.params.hash;
-
       await pool.query(
-        `UPDATE "${tableName}" SET error_status = 'resolved', resolved_at = NOW(), reopened_at = NULL WHERE error_hash = $1`,
-        [errorHash],
+        'UPDATE "' + tableName + '" SET error_status = $1, resolved_at = NOW(), reopened_at = NULL WHERE error_hash = $2',
+        ['resolved', errorHash],
       );
       res.json({ action: 'resolved' });
     } catch (err) {
@@ -372,3 +364,5 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
 
   return router;
 }
+  
+

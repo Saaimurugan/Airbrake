@@ -10,10 +10,8 @@ DECLARE
 BEGIN
   v_detail := TRIM(NEW.error_detail);
 
-  -- Always derive short error from error_detail if present
   IF v_detail IS NOT NULL AND v_detail <> '' THEN
     v_lines := string_to_array(v_detail, E'\n');
-    v_last  := TRIM(v_lines[array_upper(v_lines, 1)]);
     FOR i IN REVERSE array_upper(v_lines, 1) .. 1 LOOP
       IF TRIM(v_lines[i]) <> '' THEN
         v_last := TRIM(v_lines[i]);
@@ -23,12 +21,7 @@ BEGIN
     NEW.error := TRIM(split_part(v_last, ':', 1));
   END IF;
 
-  -- error_hash is ALWAYS based on error (short form) for consistent grouping
-  IF NEW.error IS NOT NULL AND TRIM(NEW.error) <> '' THEN
-    NEW.error_hash := MD5(TRIM(NEW.error));
-  ELSE
-    NEW.error_hash := NULL;
-  END IF;
+  -- error_hash is NOT touched here — backend owns hash generation
 
   RETURN NEW;
 END;
