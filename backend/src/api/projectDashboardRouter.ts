@@ -135,7 +135,7 @@ export function createProjectDashboardRouter(pool: Pool) {
       const union = buildErrorUnion(tables, todayWhere);
 
       const { rows } = await pool.query(`
-        SELECT project_name AS project, file_name, error, error_detail, error_hash, COALESCE(reopened_at, timestamp) AS timestamp
+        SELECT project_name AS project, file_name, error, error_detail, error_hash, timestamp AS timestamp
         FROM (${union}) AS combined
         ORDER BY timestamp DESC
       `);
@@ -278,6 +278,56 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
   const express = require('express');
   const router = express.Router();
 
+  // ── Teams webhook helper ──────────────────────────────────────────────────
+
+  async function sendTeamsAlert(projectName: string, shortError: string, errorDetail: string | undefined): Promise<void> {
+    const TEAMS_WEBHOOK_URL = process.env.TEAMS_WEBHOOK_URL ?? '';
+    if (!TEAMS_WEBHOOK_URL) {
+      console.log('[Teams] TEAMS_WEBHOOK_URL not set — skipping');
+      return;
+    }
+    console.log('[Teams] sending alert for', projectName, shortError);
+    try {
+      const jiraBaseUrl = process.env.JIRA_BASE_URL ?? 'https://your-jira-instance.atlassian.net';
+      const jiraUrl = `${jiraBaseUrl}/secure/CreateIssueDetails!init.jspa?summary=${encodeURIComponent('[' + projectName + '] ' + shortError)}&description=${encodeURIComponent(errorDetail || shortError)}&issuetype=1`;
+
+      const payload = {
+        type: 'message',
+        attachments: [
+          {
+            contentType: 'application/vnd.microsoft.card.adaptive',
+            content: {
+              type: 'AdaptiveCard',
+              $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+              version: '1.4',
+              body: [
+                { type: 'TextBlock', text: '🚨 Application Error', weight: 'Bolder', size: 'Medium', color: 'Attention' },
+                { type: 'TextBlock', text: 'Project: ' + projectName, wrap: true },
+                { type: 'TextBlock', text: shortError, weight: 'Bolder', wrap: true },
+                { type: 'TextBlock', text: errorDetail || 'No details', wrap: true, fontType: 'Monospace', size: 'Small' },
+              ],
+              actions: [
+                {
+                  type: 'Action.OpenUrl',
+                  title: '🎫 Create Jira Ticket',
+                  url: jiraUrl,
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const r = await fetch(TEAMS_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) console.error('[Teams] webhook returned', r.status);
+    } catch (err) {
+      console.error('[Teams] webhook failed:', err);
+    }
+  }
+
   router.post('/:name/errors', async (req: any, res: any) => {
     try {
       const projectName: string = decodeURIComponent(req.params.name);
@@ -322,6 +372,7 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
 
       if (updateResult.rowCount && updateResult.rowCount > 0) {
         const r = updateResult.rows[0];
+        sendTeamsAlert(projectName, shortError, errorDetail).catch(() => {});
         return res.json({
           action: r.error_status === 'reopened' ? 'reopened' : 'updated',
           error_status: r.error_status,
@@ -338,6 +389,7 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
       );
 
       const inserted = insertResult.rows[0];
+      sendTeamsAlert(projectName, shortError, errorDetail).catch(() => {});
       return res.json({ action: 'inserted', error_status: inserted.error_status, failure_count: inserted.failure_count });
 
     } catch (err) {
