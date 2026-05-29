@@ -98,6 +98,7 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
   const [saving, setSaving] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [resolved, setResolved] = useState(false);
+  const [resolveError, setResolveError] = useState('');
 
   // Fetch existing solution on open
   React.useEffect(() => {
@@ -121,6 +122,7 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
       });
       setSavedSolution(solutionText);
       setMode('view');
+      setResolveError('');
     } finally {
       setSaving(false);
     }
@@ -141,6 +143,11 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
 
   async function handleResolve() {
     if (!row.error_hash || !row.project) return;
+    if (!savedSolution.trim()) {
+      setResolveError('A solution must be added before marking this error as resolved.');
+      return;
+    }
+    setResolveError('');
     if (!window.confirm(`Mark "${row.error}" in ${row.project} as resolved? It will disappear from the dashboard.`)) return;
     setResolving(true);
     try {
@@ -231,6 +238,35 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
                 background: 'rgba(255,255,255,0.02)', border: '1px solid var(--card-border)', borderRadius: 8 }}>
                 <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
                 No detailed error information available for this entry.
+              </div>
+            )}
+
+            {/* Known solution banner — shown inline when a solution already exists */}
+            {savedSolution && (
+              <div style={{
+                marginTop: 14,
+                borderRadius: 8,
+                border: '1px solid rgba(99,102,241,0.3)',
+                background: 'rgba(99,102,241,0.07)',
+                overflow: 'hidden',
+              }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '8px 14px',
+                  background: 'rgba(99,102,241,0.12)',
+                  borderBottom: '1px solid rgba(99,102,241,0.2)',
+                }}>
+                  <span style={{ fontSize: 14 }}>💡</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#818cf8', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                    Known Solution for this Error
+                  </span>
+                </div>
+                <div style={{
+                  padding: '14px 16px', fontSize: 13, lineHeight: 1.7,
+                  color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>
+                  {savedSolution}
+                </div>
               </div>
             )}
           </div>
@@ -326,19 +362,35 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
         </div>
 
         {/* Footer — Mark as Resolved */}
-        <div style={{ padding: '14px 26px', borderTop: '1px solid var(--card-border)', display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ padding: '14px 26px', borderTop: '1px solid var(--card-border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+          {resolveError && (
+            <span style={{
+              fontSize: 12, color: '#fbbf24', fontWeight: 500,
+              background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
+              borderRadius: 6, padding: '5px 12px', flex: 1,
+            }}>
+              ⚠ {resolveError}
+            </span>
+          )}
           {resolved ? (
             <span style={{ fontSize: 13, color: '#34d399', fontWeight: 600 }}>✅ Resolved</span>
           ) : (
             <button
               onClick={handleResolve}
               disabled={resolving}
+              title={!savedSolution.trim() ? 'Add a solution before resolving' : ''}
               style={{
                 padding: '8px 20px', borderRadius: 7, fontSize: 13, fontWeight: 600,
                 cursor: resolving ? 'not-allowed' : 'pointer',
-                background: resolving ? 'rgba(16,185,129,0.1)' : 'rgba(16,185,129,0.15)',
-                color: '#34d399', border: '1px solid rgba(16,185,129,0.3)',
+                background: !savedSolution.trim()
+                  ? 'rgba(255,255,255,0.04)'
+                  : resolving ? 'rgba(16,185,129,0.1)' : 'rgba(16,185,129,0.15)',
+                color: !savedSolution.trim() ? 'var(--text-muted)' : '#34d399',
+                border: !savedSolution.trim()
+                  ? '1px solid rgba(255,255,255,0.1)'
+                  : '1px solid rgba(16,185,129,0.3)',
                 opacity: resolving ? 0.7 : 1,
+                flexShrink: 0,
               }}
             >
               {resolving ? 'Resolving…' : '✓ Mark as Resolved'}
@@ -390,7 +442,21 @@ function ErrorTable({ rows, emptyMsg }: { rows: ErrorRow[]; emptyMsg: string }) 
           </thead>
           <tbody>
             {filtered.map((row, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid var(--card-border)', background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+              <tr
+                key={i}
+                onClick={() => setSelectedRow(row)}
+                onMouseEnter={() => setHoveredIdx(i)}
+                onMouseLeave={() => setHoveredIdx(null)}
+                title="Click to view full error detail"
+                style={{
+                  borderBottom: '1px solid var(--card-border)',
+                  background: hoveredIdx === i
+                    ? 'rgba(99,102,241,0.07)'
+                    : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
+                  cursor: 'pointer',
+                  transition: 'background 0.15s',
+                }}
+              >
                 <td style={{ padding: '9px 14px', whiteSpace: 'nowrap' }}>
                   <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: '#6366f120', color: '#818cf8' }}>
                     {row.project}
@@ -399,22 +465,8 @@ function ErrorTable({ rows, emptyMsg }: { rows: ErrorRow[]; emptyMsg: string }) 
                 <td style={{ padding: '9px 14px', color: 'var(--text)', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
                   {row.file_name ?? '—'}
                 </td>
-                <td style={{ padding: '9px 14px', color: '#f87171', maxWidth: 320, wordBreak: 'break-word' }}>
-                  <span
-                    onClick={() => setSelectedRow(row)}
-                    onMouseEnter={() => setHoveredIdx(i)}
-                    onMouseLeave={() => setHoveredIdx(null)}
-                    title="Click to view full error detail"
-                    style={{
-                      cursor: 'pointer',
-                      color: hoveredIdx === i ? '#fca5a5' : '#f87171',
-                      textDecoration: hoveredIdx === i ? 'underline dotted' : 'none',
-                      transition: 'color 0.15s',
-                      display: 'inline-block',
-                    }}
-                  >
-                    {row.error}
-                  </span>
+                <td style={{ padding: '9px 14px', color: hoveredIdx === i ? '#fca5a5' : '#f87171', maxWidth: 320, wordBreak: 'break-word', transition: 'color 0.15s' }}>
+                  {row.error}
                 </td>
                 <td style={{ padding: '9px 14px', color: 'var(--text-muted)', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
                   {fmt(row.timestamp)}

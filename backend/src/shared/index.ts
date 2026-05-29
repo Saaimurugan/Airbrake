@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @portal/shared — shared type definitions
  * Centralised domain types used across backend modules.
  */
@@ -114,4 +114,3 @@ export interface SavedFilter {
   name: string;
   criteria: Record<string, unknown>;
 }
-

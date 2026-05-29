@@ -358,3 +358,7 @@ CREATE OR REPLACE TRIGGER trg_error_hash_TandF_Rubriq_proessing
 CREATE OR REPLACE TRIGGER trg_error_hash_TandF_LAT_Score_for_tracks
   BEFORE INSERT OR UPDATE ON "TandF_LAT_Score_for_tracks"
   FOR EACH ROW EXECUTE FUNCTION compute_error_hash();
+
+CREATE OR REPLACE TRIGGER trg_error_hash_Image_Forensics
+  BEFORE INSERT OR UPDATE ON "Image_Forensics"
+  FOR EACH ROW EXECUTE FUNCTION compute_error_hash();

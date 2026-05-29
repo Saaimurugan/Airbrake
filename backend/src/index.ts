@@ -136,13 +136,22 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 app.get('/api/docs.json', (_req: unknown, res: any) => res.json(swaggerSpec));
 app.get('/api/health', (_req: unknown, res: any) => res.json({ status: 'ok' }));
 
+// Teams webhook diagnostic — GET /api/health/teams
+app.get('/api/health/teams', async (_req: unknown, res: any) => {
+  const result = await testTeamsWebhook();
+  res.json(result);
+});
+
 // ─── DB-backed repositories ───────────────────────────────────────────────────
 
 import { createIngestRouter } from './api/ingestRouter';
-import { createProjectDashboardRouter, createProjectErrorUpsertRouter } from './api/projectDashboardRouter';
+import { createErrorIngestRouter } from './api/errorIngestRouter';
+import { createProjectDashboardRouter, createProjectErrorUpsertRouter, createProjectLiveRouter } from './api/projectDashboardRouter';
 import { createAlertManagementRouter } from './api/alertManagementRouter';
 import { createErrorSolutionRouter } from './api/errorSolutionRouter';
+import { createJiraRouter } from './api/jiraRouter';
 import { startAlertEngine } from './alerts/alertChecker';
+import { testTeamsWebhook } from './alerts/teamsNotifier';
 import { createLogsRouterSync } from './api/logsRouter';
 import { createBreaksRouterSync } from './api/breaksRouter';
 import { createDashboardRouterSync } from './api/dashboardRouter';
@@ -449,6 +458,8 @@ const errorAggregator = new DefaultErrorAggregator(
 const rbac = createRbacMiddleware(sessionStore, auditLogRepo) as any;
 
 app.use('/api/ingest', createIngestRouter(logPipeline, errorAggregator, parseErrorRepository, process.env.API_KEY));
+// Direct error row insertion — POST /api/ingest/error
+app.use('/api/ingest', createErrorIngestRouter(pool));
 // Project-specific dashboard endpoints (no auth — internal monitoring)
 app.use('/api/dashboard', createProjectDashboardRouter(pool));
 // Breaks grouped endpoint (no auth)
@@ -456,12 +467,18 @@ app.use('/api/breaks', createProjectDashboardRouter(pool));
 // Per-project error upsert (no auth — called by project services)
 app.use('/api/projects', createProjectErrorUpsertRouter(pool));
 
+// Live project management + test error injection
+app.use('/api/projects', createProjectLiveRouter(pool));
+
 // Alert management — alert_rules + alert_history tables
 const alertMgmtRouter = createAlertManagementRouter(pool);
 app.use('/api', alertMgmtRouter);
 
 // Error solutions — error_solutions table only
 app.use('/api/error-solution', createErrorSolutionRouter(pool));
+
+// Jira ticket creation
+app.use('/api/jira', createJiraRouter());
 
 // GET /api/projects?category=... — list projects from DB
 app.get('/api/projects', async (req: any, res: any) => {
@@ -542,7 +559,7 @@ app.use('/api/admin', createAdminRouterSync(userRepository, retentionPolicyRepos
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] listening on http://localhost:${PORT}`);
   console.log(`[Server] API docs at http://localhost:${PORT}/api/docs`);
   // Start alert engine after server is up

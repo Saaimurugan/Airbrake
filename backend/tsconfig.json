@@ -12,7 +12,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "paths": {
-      "@portal/shared": ["../shared/src"]
+      "@portal/shared": ["./src/shared/index.ts"]
     }
   },
   "include": ["src"],
