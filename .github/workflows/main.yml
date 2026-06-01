@@ -1,4 +1,4 @@
-name: Build and Deploy (FE to S3 and BE to ECS)
+name: Build and Deploy (FE to S3 and BE to Lambda)
 
 on:
   push:
@@ -6,12 +6,8 @@ on:
       - main
 
 env:
-  AWS_REGION: us-east-1                  # Replace with your actual AWS region
-  ECR_REPOSITORY: airbrake-backend       # Replace with your Amazon ECR repository name
-  ECS_SERVICE: airbrake-be-service       # Replace with your ECS service name
-  ECS_CLUSTER: airbrake-cluster          # Replace with your ECS cluster name
-  ECS_TASK_DEFINITION: .aws/task-def.json # Path to your ECS task definition JSON file
-  CONTAINER_NAME: backend                # Name of the container in your task definition
+  AWS_REGION: us-east-1
+  LAMBDA_FUNCTION_NAME: airbrake-backend
 
 jobs:
   # ==========================================
@@ -22,6 +18,7 @@ jobs:
     defaults:
       run:
         working-directory: ./frontend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -29,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install Frontend dependencies
         run: npm install
@@ -49,13 +46,36 @@ jobs:
           aws s3 sync ./dist s3://airbrake --delete
 
   # ==========================================
-  # BACKEND DEPLOYMENT TO AWS ECS
+  # BACKEND DEPLOYMENT TO AWS LAMBDA
   # ==========================================
   deploy-backend:
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./backend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+
+      - name: Install Backend dependencies
+        run: npm ci
+
+      - name: Build Backend
+        run: npm run build
+        continue-on-error: true
+
+      - name: Package Lambda
+        run: |
+          zip -r lambda.zip . \
+            -x "*.git*" \
+            -x "node_modules/aws-sdk/*"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -64,33 +84,8 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Deploy to Lambda
         run: |
-          # Builds the image using the Dockerfile inside your /backend directory
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./backend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Fill in the new image ID in the Amazon ECS task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: ${{ env.ECS_TASK_DEFINITION }}
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ steps.build-image.outputs.image }}
-
-      - name: Deploy Amazon ECS task definition
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          aws lambda update-function-code \
+            --function-name $LAMBDA_FUNCTION_NAME \
+            --zip-file fileb://lambda.zip
