@@ -5,6 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import type { Break, LogRecord } from '@portal/shared';
+import { apiFetch } from '../lib/api';
 
 interface BreakDetailData extends Break {
   status: 'new' | 'existing' | 'regression';
@@ -27,16 +28,21 @@ export function BreakDetail({ breakId }: Props) {
     let cancelled = false;
     setLoading(true);
 
-    fetch(`/api/breaks/${breakId}`)
-      .then((r) => {
-        if (r.status === 404) { if (!cancelled) setNotFound(true); return null; }
-        return r.json();
-      })
+    apiFetch(`/api/breaks/${breakId}`)
+      .then((r) => r.json())
       .then((d) => {
         if (!cancelled && d) { setData(d as BreakDetailData); setLoading(false); }
         else if (!cancelled) setLoading(false);
       })
-      .catch(() => { if (!cancelled) setLoading(false); });
+      .catch((err) => {
+        if (!cancelled) {
+          // 404 from ApiError means the break doesn't exist
+          if (err && typeof err === 'object' && 'status' in err && (err as any).status === 404) {
+            setNotFound(true);
+          }
+          setLoading(false);
+        }
+      });
 
     return () => { cancelled = true; };
   }, [breakId]);

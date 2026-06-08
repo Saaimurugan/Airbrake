@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { apiFetch } from '../lib/api';
 
 export interface BreakCountData {
   last24h: number;
@@ -67,8 +68,7 @@ export function useDashboard(apiBase = '/api'): {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${apiBase}/dashboard`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const res = await apiFetch(`${apiBase}/dashboard`);
         const json = await res.json();
         if (!cancelled) setData(json as DashboardData);
       } catch (err) {

@@ -3,6 +3,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { apiFetch } from '../lib/api';
 
 interface Project {
   id: string;
@@ -233,7 +234,7 @@ function SectionHeader({ title, count, color, collapsed, onToggle }: {
           background: `${color}20`, color,
         }}>{count}</span>
       </div>
-      <span style={{ color: '#475569', fontSize: 12, transition: 'transform 0.2s', transform: collapsed ? 'none' : 'rotate(180deg)' }}>▾</span>
+      <span style={{ color, fontSize: 18, lineHeight: 1, transition: 'transform 0.2s', transform: collapsed ? 'none' : 'rotate(180deg)', display: 'inline-block' }}>▾</span>
     </button>
   );
 }
@@ -247,7 +248,7 @@ function ProjectModal({ project, onClose }: { project: Project; onClose: () => v
   const [successCollapsed, setSuccessCollapsed] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/projects/${encodeURIComponent(project.name)}/logs`)
+    apiFetch(`/api/projects/${encodeURIComponent(project.name)}/logs`)
       .then((r) => r.json())
       .then((d) => { setStats(d as ProjectStats); setLoading(false); })
       .catch(() => setLoading(false));
@@ -452,7 +453,7 @@ export function LogStream() {
   useEffect(() => {
     setLoading(true);
     const params = activeCategory !== 'All' ? `?category=${encodeURIComponent(activeCategory)}` : '';
-    fetch(`/api/projects${params}`)
+    apiFetch(`/api/projects${params}`)
       .then((r) => r.json())
       .then((data) => { setProjects(data as Project[]); setLoading(false); })
       .catch(() => setLoading(false));

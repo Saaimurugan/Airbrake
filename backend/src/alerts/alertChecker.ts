@@ -16,6 +16,11 @@ import { sendTeamsAlert } from './teamsNotifier';
 const POLL_INTERVAL_MS = 30_000; // 30 seconds
 
 // key: `${ruleId}:${projectName}:${errorMsg}` → last triggered timestamp
+// NOTE (Lambda): this Map is module-level and survives across invocations within
+// the same warm execution environment, but resets on cold starts.
+// The DB-level dedup in insertHistory() is the authoritative guard — this Map
+// only provides a lightweight in-memory fast-path to skip duplicate DB writes
+// within a single warm instance.
 const lastFired = new Map<string, number>();
 
 // Cooldown — same rule+project+error won't fire again within 1 minute
@@ -36,10 +41,8 @@ async function getProjectTables(pool: Pool): Promise<string[]> {
   const liveFilter = hasIsLive
     ? `AND REPLACE(c.table_name, '_', ' ') IN (SELECT name FROM projects WHERE is_live = true)`
     : `AND c.table_name IN (
-        'TandF_Rubriq_proessing',
-        'TandF Rubriq proessing',
-        'Language_Quality_Score',
-        'Language Quality Score'
+        'tand_f_rubriq_processing',
+        'language_quality_score'
       )`;
 
   const { rows } = await pool.query<{ table_name: string }>(`
@@ -356,4 +359,16 @@ export async function startAlertEngine(pool: Pool): Promise<void> {
 
   await runBackfill(pool);
   setInterval(() => runAlertCheck(pool), POLL_INTERVAL_MS);
+}
+
+/**
+ * Single-shot alert check — safe to call from a Lambda handler.
+ * Use this instead of startAlertEngine() in Lambda, where setInterval
+ * does not persist between invocations.
+ *
+ * Wire up an EventBridge scheduled rule (rate: 30 seconds) to invoke
+ * the `alertHandler` export in lambda.ts, which calls this function.
+ */
+export async function runAlertCheckOnce(pool: Pool): Promise<void> {
+  await runAlertCheck(pool);
 }

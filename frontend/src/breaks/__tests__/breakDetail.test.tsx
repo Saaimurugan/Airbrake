@@ -49,6 +49,7 @@ afterEach(() => {
 describe('BreakDetail', () => {
   it('renders all required fields for a known break', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       status: 200,
       json: async () => mockBreak,
     });
@@ -67,6 +68,7 @@ describe('BreakDetail', () => {
 
   it('shows correlated log entries', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       status: 200,
       json: async () => mockBreak,
     });
@@ -79,6 +81,7 @@ describe('BreakDetail', () => {
   it('shows "Data not available" placeholder for null requestPayload', async () => {
     const breakWithNulls = { ...mockBreak, requestPayload: null, userSession: null };
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       status: 200,
       json: async () => breakWithNulls,
     });
@@ -91,7 +94,12 @@ describe('BreakDetail', () => {
   });
 
   it('shows not found message for 404', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ status: 404, json: async () => ({}) });
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({}),
+    });
 
     render(<BreakDetail breakId="nonexistent" />);
     await waitFor(() => expect(screen.getByTestId('break-not-found')).toBeInTheDocument());

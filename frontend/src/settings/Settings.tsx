@@ -5,6 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import type { RetentionPolicy, Role, User } from '@portal/shared';
+import { apiFetch } from '../lib/api';
 
 interface Props {
   readonly role: Role;
@@ -45,8 +46,8 @@ export function Settings({ role }: Props) {
     let cancelled = false;
 
     Promise.all([
-      fetch('/api/users').then((r) => r.json()),
-      fetch('/api/retention').then((r) => r.json()),
+      apiFetch('/api/users').then((r) => r.json()),
+      apiFetch('/api/retention').then((r) => r.json()),
     ])
       .then(([usersData, retentionData]) => {
         if (!cancelled) {

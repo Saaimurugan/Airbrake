@@ -38,6 +38,7 @@
 
 import { Pool } from 'pg';
 import * as crypto from 'crypto';
+import { randomUUID } from 'crypto';
 import { sendTeamsAlert } from '../alerts/teamsNotifier';
 
 // ─── Shared insert helper ─────────────────────────────────────────────────────
@@ -62,6 +63,8 @@ async function insertRow(
     llmUsage:       string | null;
   },
 ) {
+  // Generate UUID in Node.js — Aurora DSQL does not support gen_random_uuid()
+  const id = randomUUID();
   const { rows } = await pool.query(
     `INSERT INTO "${params.tableName}" (
        id, project_name, file_name, timestamp,
@@ -70,15 +73,16 @@ async function insertRow(
        word_count, file_type,
        input_tokens, output_tokens, calculated_cost, llm_usage
      ) VALUES (
-       gen_random_uuid(), $1, $2, NOW(),
-       $3, $4,
-       $5, $6, $7, $8,
-       $9, $10,
-       $11, $12, $13, $14
+       $1, $2, $3, NOW(),
+       $4, $5,
+       $6, $7, $8, $9,
+       $10, $11,
+       $12, $13, $14, $15
      )
      RETURNING id, project_name, file_name, error, error_detail,
                error_hash, error_status, success_count, failure_count, timestamp`,
     [
+      id,
       params.projectName, params.fileName,
       params.successCount, params.failureCount,
       params.error, params.errorDetail, params.errorHash, params.errorStatus,
@@ -104,13 +108,16 @@ function parseOptionalFields(body: Record<string, unknown>) {
   };
 }
 
-async function verifyTable(pool: Pool, tableName: string): Promise<boolean> {
+async function verifyTable(pool: Pool, tableName: string): Promise<string | null> {
+  // Case-insensitive lookup — Aurora DSQL stores table names in lowercase,
+  // but the project name conversion (spaces→underscores) may not match case.
+  // Returns the ACTUAL table name from the DB, or null if not found.
   const { rows } = await pool.query(
     `SELECT table_name FROM information_schema.tables
-     WHERE table_schema = 'public' AND table_name = $1`,
+     WHERE table_schema = 'public' AND LOWER(table_name) = LOWER($1)`,
     [tableName],
   );
-  return rows.length > 0;
+  return rows.length > 0 ? (rows[0].table_name as string) : null;
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -146,8 +153,9 @@ export function createErrorIngestRouter(pool: Pool) {
         });
       }
 
-      const tableName = projectName.replace(/ /g, '_');
-      if (!(await verifyTable(pool, tableName))) {
+      const tableNameRaw = projectName.replace(/ /g, '_');
+      const actualTable  = await verifyTable(pool, tableNameRaw);
+      if (!actualTable) {
         return res.status(404).json({
           error: `No table found for project "${projectName}". Check GET /api/projects for valid names.`,
         });
@@ -164,7 +172,7 @@ export function createErrorIngestRouter(pool: Pool) {
         .digest('hex');
 
       const inserted = await insertRow(pool, {
-        projectName, tableName,
+        projectName, tableName: actualTable,
         fileName:    opt.fileName,
         error,
         errorDetail: opt.errorDetail,
@@ -223,8 +231,9 @@ export function createErrorIngestRouter(pool: Pool) {
 
       if (!projectName) return res.status(400).json({ error: 'project_name is required' });
 
-      const tableName = projectName.replace(/ /g, '_');
-      if (!(await verifyTable(pool, tableName))) {
+      const tableNameRaw2 = projectName.replace(/ /g, '_');
+      const actualTable2  = await verifyTable(pool, tableNameRaw2);
+      if (!actualTable2) {
         return res.status(404).json({
           error: `No table found for project "${projectName}". Check GET /api/projects for valid names.`,
         });
@@ -257,7 +266,7 @@ export function createErrorIngestRouter(pool: Pool) {
         : null;
 
       const inserted = await insertRow(pool, {
-        projectName, tableName,
+        projectName, tableName: actualTable2,
         fileName:    opt.fileName,
         error:       isError ? error : null,
         errorDetail: opt.errorDetail,
@@ -332,8 +341,9 @@ export function createErrorIngestRouter(pool: Pool) {
         return res.status(400).json({ error: 'project_name is required' });
       }
 
-      const tableName = projectName.replace(/ /g, '_');
-      if (!(await verifyTable(pool, tableName))) {
+      const tableNameRaw3 = projectName.replace(/ /g, '_');
+      const actualTable3  = await verifyTable(pool, tableNameRaw3);
+      if (!actualTable3) {
         return res.status(404).json({
           error: `No table found for project "${projectName}". Check GET /api/projects for valid names.`,
         });
@@ -343,7 +353,7 @@ export function createErrorIngestRouter(pool: Pool) {
       const successCount = typeof body.success_count === 'number' ? body.success_count : 1;
 
       const inserted = await insertRow(pool, {
-        projectName, tableName,
+        projectName, tableName: actualTable3,
         fileName:       opt.fileName,
         error:          null,
         errorDetail:    null,

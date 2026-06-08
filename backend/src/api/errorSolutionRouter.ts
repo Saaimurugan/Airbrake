@@ -24,17 +24,18 @@ export function createErrorSolutionRouter(pool: Pool) {
       }
 
       // Derive table name from project_name (spaces → underscores)
-      const tableName = project_name.replace(/ /g, '_');
+      const tableNameRaw = project_name.replace(/ /g, '_');
 
-      // Verify table exists
+      // Case-insensitive lookup for Aurora DSQL
       const { rows: tableCheck } = await pool.query(
         `SELECT table_name FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = $1`,
-        [tableName],
+         WHERE table_schema = 'public' AND LOWER(table_name) = LOWER($1)`,
+        [tableNameRaw],
       );
       if (tableCheck.length === 0) {
         return res.status(404).json({ error: `No table found for project: ${project_name}` });
       }
+      const tableName: string = tableCheck[0].table_name;
 
       const { rowCount } = await pool.query(
         `UPDATE "${tableName}"

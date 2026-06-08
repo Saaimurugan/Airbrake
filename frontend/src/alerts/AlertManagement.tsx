@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import type { Role } from '@portal/shared';
+import { apiFetch, ApiError } from '../lib/api';
 
 interface Props { readonly role: Role; }
 
@@ -138,7 +139,7 @@ const CHANNEL_ICONS: Record<ChannelType, string> = {
 function useProjects(): string[] {
   const [projects, setProjects] = React.useState<string[]>([]);
   React.useEffect(() => {
-    fetch('/api/projects')
+    apiFetch('/api/projects')
       .then(r => r.json())
       .then((rows: { name: string }[]) => setProjects(rows.map(r => r.name).sort()))
       .catch(console.error);
@@ -604,7 +605,7 @@ export function AlertManagement({ role }: Props) {
   }
 
   function loadRules() {
-    fetch('/api/alert-rules')
+    apiFetch('/api/alert-rules')
       .then(r => r.json())
       .then((rows: any[]) => setRules(rows.map(mapRule)))
       .catch(console.error)
@@ -612,7 +613,7 @@ export function AlertManagement({ role }: Props) {
   }
 
   function loadTriggered() {
-    fetch('/api/alert-history')
+    apiFetch('/api/alert-history')
       .then(r => r.json())
       .then((rows: any[]) => setTriggered(rows.map(mapTriggered)))
       .catch(console.error);
@@ -638,11 +639,11 @@ export function AlertManagement({ role }: Props) {
     };
 
     if (editTarget) {
-      await fetch(`/api/alert-rules/${editTarget.id}`, {
+      await apiFetch(`/api/alert-rules/${editTarget.id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
     } else {
-      await fetch('/api/alert-rules', {
+      await apiFetch('/api/alert-rules', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
     }
@@ -652,12 +653,12 @@ export function AlertManagement({ role }: Props) {
 
   async function handleDelete(id: string) {
     if (!window.confirm('Delete this alert rule?')) return;
-    await fetch(`/api/alert-rules/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/alert-rules/${id}`, { method: 'DELETE' });
     loadRules();
   }
 
   async function handleToggle(id: string) {
-    await fetch(`/api/alert-rules/${id}/toggle`, { method: 'PATCH' });
+    await apiFetch(`/api/alert-rules/${id}/toggle`, { method: 'PATCH' });
     loadRules();
   }
 

@@ -11,7 +11,16 @@ export const swaggerSpec = {
     description:
       'REST API for ingesting logs and errors, querying breaks, managing alerts, and exporting data.',
   },
-  servers: [{ url: 'http://localhost:3001', description: 'Local dev server' }],
+  servers: [
+    {
+      url: 'https://l7xnpjosjvyrlx55dxrwdvx5g40okeyd.lambda-url.us-east-1.on.aws',
+      description: 'Production — AWS Lambda Function URL',
+    },
+    {
+      url: 'http://localhost:3001',
+      description: 'Local dev server',
+    },
+  ],
   components: {
     securitySchemes: {
       ApiKeyAuth: {

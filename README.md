@@ -1,326 +1,173 @@
-# 🔥 Airbrake Monitoring Portal
+# Airbrake Monitoring Portal
 
-A full-stack error and log monitoring portal. Ingest logs and errors from your services via REST API, view them in real-time, and manage alert rules — all in one place.
-
----
-
-## Stack
-
-| Layer | Tech |
-|---|---|
-| Frontend | React 18, TypeScript, Vite |
-| Backend | Node.js, Express, TypeScript |
-| Real-time | WebSocket (ws) |
-| Search | Elasticsearch (indexer interface) |
-| Database | PostgreSQL (repository interface) |
-| Cache / Pub-Sub | Redis |
-| Monorepo | npm workspaces |
+Full-stack AI error monitoring portal with AWS Lambda backend and Aurora DSQL database.
 
 ---
 
-## Project Structure
+## Architecture
 
 ```
-.
-├── backend/        Express API server
-│   └── src/
-│       ├── api/            REST routers + Swagger spec
-│       ├── aggregator/     Error fingerprinting & grouping
-│       ├── airbrake/       Airbrake polling client
-│       ├── alerts/         Alert rule engine
-│       ├── auth/           OAuth + RBAC middleware
-│       ├── parsers/        Log & break payload parsers
-│       ├── pipeline/       Log ingest pipeline
-│       ├── retention/      Data purge job
-│       └── websocket/      WebSocket server
-├── frontend/       React SPA
-│   └── src/
-│       ├── alerts/         Alert management UI
-│       ├── auth/           Login page + protected routes
-│       ├── breaks/         Breaks list & detail
-│       ├── dashboard/      Dashboard widgets
-│       ├── layout/         Sidebar layout
-│       ├── logs/           Live log stream
-│       ├── settings/       User & retention settings
-│       └── theme/          Dark/light theme context
-└── shared/         Shared TypeScript interfaces
+Frontend (React + Vite)
+    ↓  HTTPS
+AWS Lambda Function URL
+https://l7xnpjosjvyrlx55dxrwdvx5g40okeyd.lambda-url.us-east-1.on.aws
+    ↓  IAM auth (automatic via execution role)
+Aurora DSQL
+ezt2bkam5s4kjre73r25easkcu.dsql.us-east-1.on.aws
 ```
 
 ---
 
-## Getting Started
+## Lambda Deployment (for whoever has AWS access)
 
-### Prerequisites
-
-- Node.js 20+
-- npm 10+
-
-### Install
+### Step 1 — Build the backend
 
 ```bash
+cd backend
 npm install
-```
-
-### Run (development)
-
-Start backend and frontend in separate terminals:
-
-```bash
-# Terminal 1 — backend (port 3001)
-cd backend && npm run dev
-
-# Terminal 2 — frontend (port 3000)
-cd frontend && npm run dev
-```
-
-Then open http://localhost:3000.
-
-### Build
-
-```bash
 npm run build
 ```
 
-### Test
+### Step 2 — Create the zip
 
-```bash
-npm test
+```powershell
+# Windows
+Compress-Archive -Path dist, node_modules, package.json -DestinationPath lambda-deploy.zip -Force
 ```
 
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `3001` | Backend server port |
-| `INGEST_API_KEY` | _(unset)_ | API key for ingest endpoints. If unset, endpoints are open (dev mode). |
-| `AIRBRAKE_API_KEY` | `placeholder` | Airbrake project API key |
-| `AIRBRAKE_PROJECT_ID` | `placeholder` | Airbrake project ID |
-| `AIRBRAKE_POLL_INTERVAL` | `30000` | Airbrake polling interval in ms |
-
----
-
-## Database
-
-The backend uses **PostgreSQL**. Migrations live in `backend/src/db/migrations/` and are numbered sequentially. Run them in order against your database before starting the server.
-
 ```bash
-psql -U <user> -d <database> -f backend/src/db/migrations/001_create_users.sql
-psql -U <user> -d <database> -f backend/src/db/migrations/002_create_break_groups.sql
-# ... and so on through 008
+# Mac/Linux
+zip -r lambda-deploy.zip dist/ node_modules/ package.json
 ```
 
-### Schema
+### Step 3 — Upload to Lambda
 
-#### `users`
-Stores authenticated users with their OAuth identity and RBAC role.
+```
+AWS Console → Lambda → your function → Code → Upload from → .zip file
+Select: lambda-deploy.zip
+```
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `email` | `TEXT` | Unique |
-| `role` | `TEXT` | `admin`, `developer`, `viewer` |
-| `oauth_provider` | `TEXT` | e.g. `google`, `github` |
-| `oauth_subject` | `TEXT` | Provider's user ID |
-| `created_at` | `TIMESTAMPTZ` | |
+### Step 4 — Set Lambda Handler
 
-#### `break_groups`
-One row per unique error fingerprint. Tracks occurrence counts and lifecycle status.
+```
+Lambda → Code → Runtime settings → Edit
+Handler:  dist/lambda.lambdaHandler
+Runtime:  Node.js 20.x
+Timeout:  30 seconds
+Memory:   512 MB
+```
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `fingerprint` | `TEXT` | SHA-256 of `applicationId + errorMessage + stackTrace` — unique |
-| `application_id` | `TEXT` | |
-| `first_occurrence` | `TIMESTAMPTZ` | |
-| `last_occurrence` | `TIMESTAMPTZ` | Indexed DESC |
-| `occurrence_count` | `INTEGER` | |
-| `status` | `TEXT` | `open`, `resolved`, `regression` |
-| `severity` | `TEXT` | `info`, `warning`, `error`, `critical` |
-| `error_message` | `TEXT` | |
+### Step 5 — Set Environment Variables
 
-#### `breaks`
-Individual error occurrences, linked to a `break_group`.
+```
+Lambda → Configuration → Environment variables → Edit
+```
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `application_id` | `TEXT` | |
-| `environment` | `TEXT` | |
-| `severity` | `TEXT` | |
-| `error_message` | `TEXT` | |
-| `stack_trace` | `TEXT` | |
-| `endpoint` | `TEXT` | Nullable |
-| `request_payload` | `JSONB` | Nullable |
-| `user_session` | `JSONB` | Nullable |
-| `timestamp` | `TIMESTAMPTZ` | Indexed DESC |
-| `fingerprint` | `TEXT` | |
-| `group_id` | `UUID` | FK → `break_groups.id` |
+| Key | Value |
+|---|---|
+| `DSQL_ENDPOINT` | `ezt2bkam5s4kjre73r25easkcu.dsql.us-east-1.on.aws` |
+| `DSQL_REGION` | `us-east-1` |
+| `NODE_ENV` | `production` |
+| `TEAMS_WEBHOOK_URL` | *(Teams incoming webhook URL)* |
 
-#### `alert_rules`
-Configurable threshold-based alert rules with notification channel definitions.
+### Step 6 — Grant Lambda permission to Aurora DSQL
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `name` | `TEXT` | |
-| `threshold` | `INTEGER` | Min error count to trigger |
-| `window_seconds` | `INTEGER` | Rolling time window |
-| `trigger_on_new_error` | `BOOLEAN` | Fire on first occurrence |
-| `channels` | `JSONB` | Array of `email`, `slack`, `teams`, or `webhook` channel objects |
-| `created_by` | `UUID` | FK → `users.id` |
-| `enabled` | `BOOLEAN` | |
+```
+Lambda → Configuration → Permissions → click Execution role → Add inline policy
+```
 
-#### `saved_filters`
-Per-user saved search filter presets.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `user_id` | `UUID` | FK → `users.id` |
-| `name` | `TEXT` | |
-| `criteria` | `JSONB` | `{ keyword, tags, severity[], applications[], timeRange, errorCode }` |
-
-#### `retention_policies`
-Data retention configuration per application.
-
-| Column | Type | Notes |
-|---|---|---|
-| `application_id` | `TEXT` | PK |
-| `retention_days` | `INTEGER` | `30`, `60`, or `90` |
-
-#### `parse_errors`
-Malformed ingest payloads that failed validation, stored for debugging.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `raw_payload` | `JSONB` | The original bad payload |
-| `error_message` | `TEXT` | Validation failure reason |
-| `occurred_at` | `TIMESTAMPTZ` | Indexed DESC |
-
-#### `audit_log`
-Immutable record of all RBAC-gated actions for compliance.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `user_id` | `UUID` | FK → `users.id` (nullable if user deleted) |
-| `action` | `TEXT` | e.g. `GET /api/breaks` |
-| `resource` | `TEXT` | |
-| `outcome` | `TEXT` | `allowed` or `denied` |
-| `ip_address` | `TEXT` | |
-| `occurred_at` | `TIMESTAMPTZ` | Indexed DESC |
-
----
-
-
-
-Interactive docs are available at **http://localhost:3001/api/docs** (Swagger UI).
-
-Raw OpenAPI spec: `GET http://localhost:3001/api/docs.json`
-
-### Swagger UI
-
-The Swagger UI at `/api/docs` lets you explore and test every endpoint directly from the browser — no Postman or curl needed.
-
-![Swagger UI](https://img.shields.io/badge/Swagger-UI-85EA2D?logo=swagger&logoColor=black)
-
-Things you can do from the Swagger UI:
-
-- Browse all endpoints grouped by tag (Ingest, Breaks, Logs, Dashboard, Alerts, Admin, System)
-- See full request/response schemas with field descriptions and example values
-- Execute requests live against the running server using the "Try it out" button
-- Authenticate ingest requests by clicking "Authorize" and entering your `X-API-Key`
-- Download the raw OpenAPI 3.0 spec from `GET /api/docs.json` to import into Postman or other tooling
-
-### Ingest API
-
-Use these endpoints to push logs and errors from your services into the portal.
-
-#### POST /api/ingest/logs
-
-Report a log entry.
-
-```http
-POST http://localhost:3001/api/ingest/logs
-Content-Type: application/json
-X-API-Key: <your-key>        # omit in dev
-
+```json
 {
-  "applicationId": "my-service",
-  "environment":   "production",
-  "severity":      "error",
-  "message":       "Database connection timed out",
-  "timestamp":     "2026-03-18T09:00:00Z",
-  "tags":          ["db", "timeout"]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["dsql:DbConnectAdmin"],
+      "Resource": "arn:aws:dsql:us-east-1:850995535850:cluster/ezt2bkam5s4kjre73r25easkcu"
+    }
+  ]
 }
 ```
 
-Response `202`:
+Name it: `AuroraDSQLAccess` → Save
+
+### Step 7 — Verify
+
+Test in Lambda console with this event:
 ```json
-{ "id": "<uuid>", "status": "accepted" }
-```
-
-#### POST /api/ingest/errors
-
-Report an error / break. The server computes the fingerprint and runs aggregation automatically.
-
-```http
-POST http://localhost:3001/api/ingest/errors
-Content-Type: application/json
-X-API-Key: <your-key>
-
 {
-  "applicationId": "my-service",
-  "environment":   "production",
-  "severity":      "critical",
-  "errorMessage":  "TypeError: Cannot read property 'id' of undefined",
-  "stackTrace":    "at UserController.get (user.ts:42)\n  at Router.handle...",
-  "endpoint":      "/api/users/123",
-  "requestPayload": { "userId": "123" }
+  "version": "2.0",
+  "requestContext": {"http": {"method": "GET", "path": "/api/health"}},
+  "rawPath": "/api/health",
+  "rawQueryString": ""
 }
 ```
 
-Response `202`:
-```json
-{ "id": "<uuid>", "groupId": "<uuid>", "status": "new" }
+Expected: `{"statusCode": 200, "body": "{\"status\":\"ok\",...}"}`
+
+---
+
+## Frontend Deployment
+
+The frontend build is pre-configured to call the Lambda URL.
+
+```bash
+cd frontend
+npm install
+npm run build
+# Upload frontend/dist/ to S3 bucket: airbrake
+aws s3 sync dist/ s3://airbrake --delete
 ```
 
-`status` is `new`, `existing`, or `regression` depending on the error's history.
-
-### Query API
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/breaks` | Paginated breaks list (`page`, `limit`, `status`, `severity`, `applicationId`, `from`, `to`) |
-| `GET` | `/api/breaks/:id` | Break detail with correlated logs |
-| `GET` | `/api/breaks/export` | Export breaks as JSON or CSV (`?format=csv`) |
-| `GET` | `/api/logs` | Paginated log search (`keyword`, `tags`, `severity`, `environment`, `applicationId`, `from`, `to`) |
-| `GET` | `/api/logs/export` | Export logs as JSON or CSV |
-| `GET` | `/api/dashboard` | Dashboard aggregation metrics |
-| `GET` | `/api/alerts` | List alert rules |
-| `GET` | `/api/health` | Health check |
+Frontend URL: `http://airbrake.s3-website-us-east-1.amazonaws.com`
 
 ---
 
-## Authentication
+## Local Development
 
-The frontend uses a dev bypass login — pick a role (admin / developer / viewer) and a fake session token is stored in `localStorage`. RBAC is enforced on all query endpoints via session middleware.
+```bash
+# Backend (connects to local PostgreSQL — swap DSQL_ENDPOINT in .env for Aurora DSQL)
+cd backend
+cp .env.example .env   # fill in your values
+npm install
+npm run dev            # starts on http://localhost:3001
 
-Ingest endpoints use a separate `X-API-Key` header so external services can report without an OAuth session.
+# Frontend
+cd frontend
+npm install
+npm run dev            # starts on http://localhost:3000 (proxies /api to Lambda)
+```
 
 ---
 
-## Features
+## Key API Endpoints
 
-- Live log stream via WebSocket
-- Error aggregation with fingerprinting (new / existing / regression detection)
-- Dashboard with break counts, error rate trend, top services, and severity breakdown
-- Paginated breaks list with status badges and correlated log view
-- Alert rule management (admin / developer roles)
-- User management and data retention settings (admin only)
-- CSV and JSON export for logs and breaks
-- Dark / light theme
-- Swagger UI for API testing
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/projects` | List all projects |
+| GET | `/api/projects/:name/logs` | Project detail + logs |
+| GET | `/api/dashboard/top-projects` | Top 10 most used |
+| GET | `/api/dashboard/today-errors` | Today's errors |
+| GET | `/api/breaks/grouped` | Grouped error breaks |
+| GET | `/api/alert-rules` | Alert rules list |
+| POST | `/api/ingest/log` | Ingest a log row |
+| POST | `/api/ingest/error` | Ingest an error row |
+
+Full API docs: `https://l7xnpjosjvyrlx55dxrwdvx5g40okeyd.lambda-url.us-east-1.on.aws/api/docs`
+
+---
+
+## Aurora DSQL Tables (already created)
+
+- `tand_f_rubriq_processing`
+- `language_quality_score`
+
+Both tables have the schema:
+```sql
+id uuid, project_name text, file_name text, timestamp timestamptz,
+success_count int, failure_count int, error text, error_detail text,
+error_hash text, error_status text, word_count int, file_type text,
+input_tokens int, output_tokens int, calculated_cost numeric,
+llm_usage text, resolved_at timestamp, reopened_at timestamp
+```

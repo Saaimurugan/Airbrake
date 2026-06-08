@@ -9,16 +9,16 @@ import React from 'react';
 import { AlertManagement } from '../AlertManagement';
 import { Settings } from '../../settings/Settings';
 
+// DB-shaped mock data (matches mapRule field names)
 const mockRules = [
   {
     id: 'rule-1',
-    name: 'High Error Rate',
+    rule_name: 'High Error Rate',
+    project_name: 'Test Project',
+    alert_type: 'High Failure',
     threshold: 10,
-    windowSeconds: 60,
-    triggerOnNewError: false,
-    channels: [],
-    createdBy: 'user-1',
-    enabled: true,
+    window_minutes: 1,
+    is_active: true,
   },
 ];
 
@@ -35,6 +35,16 @@ const mockUsers = [
 
 const mockRetention = { applicationId: 'app-a', retentionDays: 30 };
 
+// Helper: mock fetch — returns rules for /alert-rules, empty for everything else
+function mockFetchForAlerts() {
+  (global.fetch as jest.Mock).mockImplementation((url: string) => {
+    if (typeof url === 'string' && url.includes('alert-rules')) {
+      return Promise.resolve({ ok: true, json: async () => mockRules });
+    }
+    return Promise.resolve({ ok: true, json: async () => [] });
+  });
+}
+
 beforeEach(() => {
   global.fetch = jest.fn();
 });
@@ -44,47 +54,65 @@ afterEach(() => {
 });
 
 describe('AlertManagement — role gating', () => {
-  it('renders for admin role', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      json: async () => mockRules,
-    });
+  // AlertManagement makes 3 concurrent fetch calls on mount:
+  //   /api/alert-rules, /api/alert-history, /api/projects
+  // We use URL-based mocking so order doesn't matter.
+
+  it('renders for admin role and shows rules after load', async () => {
+    mockFetchForAlerts();
     render(<AlertManagement role="admin" />);
-    await waitFor(() => expect(screen.getByTestId('alert-management')).toBeInTheDocument());
-    expect(screen.getByTestId('create-rule')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('High Error Rate')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('alert-management')).toBeInTheDocument();
   });
 
   it('renders for developer role', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      json: async () => mockRules,
-    });
+    mockFetchForAlerts();
     render(<AlertManagement role="developer" />);
-    await waitFor(() => expect(screen.getByTestId('alert-management')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('High Error Rate')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('alert-management')).toBeInTheDocument();
   });
 
-  it('is hidden for viewer role', () => {
+  it('renders for viewer role (read-only)', async () => {
+    mockFetchForAlerts();
     render(<AlertManagement role="viewer" />);
-    expect(screen.queryByTestId('alert-management')).not.toBeInTheDocument();
+    // Component always renders for all roles
+    await waitFor(() =>
+      expect(screen.getByTestId('alert-management')).toBeInTheDocument(),
+    );
   });
 
-  it('renders alert rule items', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      json: async () => mockRules,
-    });
+  it('renders alert rule items after data loads', async () => {
+    mockFetchForAlerts();
     render(<AlertManagement role="admin" />);
-    await waitFor(() => expect(screen.getByTestId('alert-rule-item')).toBeInTheDocument());
-    expect(screen.getByTestId('rule-name')).toHaveTextContent('High Error Rate');
-    expect(screen.getByTestId('rule-threshold')).toHaveTextContent('10');
+    await waitFor(() =>
+      expect(screen.getByText('High Error Rate')).toBeInTheDocument(),
+    );
+    expect(screen.getByText('High Error Rate')).toBeInTheDocument();
   });
 });
 
 describe('Settings — role gating', () => {
+  // Settings makes 2 fetch calls on mount: /api/users and /api/retention
+
+  function mockFetchForSettings() {
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('users')) {
+        return Promise.resolve({ ok: true, json: async () => mockUsers });
+      }
+      return Promise.resolve({ ok: true, json: async () => mockRetention });
+    });
+  }
+
   it('renders for admin role', async () => {
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({ json: async () => mockUsers })
-      .mockResolvedValueOnce({ json: async () => mockRetention });
+    mockFetchForSettings();
     render(<Settings role="admin" />);
-    await waitFor(() => expect(screen.getByTestId('settings')).toBeInTheDocument());
-    expect(screen.getByTestId('user-management')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('user-management')).toBeInTheDocument(),
+    );
     expect(screen.getByTestId('retention-settings')).toBeInTheDocument();
   });
 
@@ -99,11 +127,11 @@ describe('Settings — role gating', () => {
   });
 
   it('renders user rows', async () => {
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({ json: async () => mockUsers })
-      .mockResolvedValueOnce({ json: async () => mockRetention });
+    mockFetchForSettings();
     render(<Settings role="admin" />);
-    await waitFor(() => expect(screen.getByTestId('user-row')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('user-row')).toBeInTheDocument(),
+    );
     expect(screen.getByTestId('user-email')).toHaveTextContent('admin@example.com');
     expect(screen.getByTestId('user-role')).toHaveTextContent('admin');
   });

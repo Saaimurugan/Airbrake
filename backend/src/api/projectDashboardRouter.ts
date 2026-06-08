@@ -35,10 +35,8 @@ async function getProjectTables(pool: Pool): Promise<string[]> {
   const liveFilter = hasIsLive
     ? `AND REPLACE(c.table_name, '_', ' ') IN (SELECT name FROM projects WHERE is_live = true)`
     : `AND c.table_name IN (
-        'TandF_Rubriq_proessing',
-        'TandF Rubriq proessing',
-        'Language_Quality_Score',
-        'Language Quality Score'
+        'tand_f_rubriq_processing',
+        'language_quality_score'
       )`;
 
   const { rows } = await pool.query<{ table_name: string }>(`
@@ -322,22 +320,31 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
   router.post('/:name/errors', async (req: any, res: any) => {
     try {
       const projectName: string = decodeURIComponent(req.params.name);
-      const tableName = projectName.replace(/ /g, '_');
+      const tableNameRaw = projectName.replace(/ /g, '_');
 
+      // Case-insensitive lookup for Aurora DSQL (stores names in lowercase)
       const { rows: tableCheck } = await pool.query(
-        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
-        ['public', tableName],
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND LOWER(table_name) = LOWER($2)',
+        ['public', tableNameRaw],
       );
       if (tableCheck.length === 0) {
         return res.status(404).json({ error: 'No table found for project: ' + projectName });
       }
+      const tableName: string = tableCheck[0].table_name;
 
       // Only send Teams alerts for live projects
-      const { rows: liveCheck } = await pool.query(
-        'SELECT is_live FROM projects WHERE name = $1',
-        [projectName],
-      );
-      const isLive: boolean = liveCheck[0]?.is_live === true;
+      // (graceful fallback if projects registry doesn't exist in Aurora DSQL)
+      let isLive = false;
+      try {
+        const { rows: liveCheck } = await pool.query(
+          'SELECT is_live FROM projects WHERE name = $1',
+          [projectName],
+        );
+        isLive = liveCheck[0]?.is_live === true;
+      } catch {
+        // projects table doesn't exist — treat all as non-live (no Teams alert)
+        isLive = false;
+      }
 
       const body = req.body as Record<string, unknown>;
       const fileName: string = String(body.file_name ?? '');
@@ -381,9 +388,9 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
       const insertResult = await pool.query(
         'INSERT INTO "' + tableName + '" (id, project_name, file_name, timestamp, success_count, failure_count, ' +
         'error, error_detail, error_hash, error_status) ' +
-        'VALUES (gen_random_uuid(), $1, $2, NOW(), 0, 1, $3, $4, $5, $6) ' +
+        'VALUES ($7, $1, $2, NOW(), 0, 1, $3, $4, $5, $6) ' +
         'RETURNING id, error_status, failure_count',
-        [projectName, fileName, shortError, errorDetail ?? null, errorHash, 'open'],
+        [projectName, fileName, shortError, errorDetail ?? null, errorHash, 'open', require('crypto').randomUUID()],
       );
 
       const inserted = insertResult.rows[0];
@@ -399,8 +406,19 @@ export function createProjectErrorUpsertRouter(pool: Pool) {
   router.patch('/:name/errors/:hash/resolve', async (req: any, res: any) => {
     try {
       const projectName: string = decodeURIComponent(req.params.name);
-      const tableName = projectName.replace(/ /g, '_');
+      const tableNameRaw = projectName.replace(/ /g, '_');
       const errorHash: string = req.params.hash;
+
+      // Case-insensitive lookup for Aurora DSQL
+      const { rows: tableCheck } = await pool.query(
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND LOWER(table_name) = LOWER($2)',
+        ['public', tableNameRaw],
+      );
+      if (tableCheck.length === 0) {
+        return res.status(404).json({ error: 'No table found for project: ' + projectName });
+      }
+      const tableName: string = tableCheck[0].table_name;
+
       await pool.query(
         'UPDATE "' + tableName + '" SET error_status = $1, resolved_at = NOW(), reopened_at = NULL WHERE error_hash = $2',
         ['resolved', errorHash],
@@ -453,6 +471,14 @@ export function createProjectLiveRouter(pool: Pool) {
 
   router.get('/live', async (_req: any, res: any) => {
     try {
+      // Check if the projects registry exists first (may not exist in Aurora DSQL)
+      const { rows: tableExists } = await pool.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'projects' LIMIT 1`,
+      );
+      if (tableExists.length === 0) {
+        // No projects table — return all discovered project tables as "live"
+        return res.json([]);
+      }
       const { rows } = await pool.query(
         'SELECT id, name, category, is_live FROM projects WHERE is_live = true ORDER BY name',
       );
@@ -472,6 +498,14 @@ export function createProjectLiveRouter(pool: Pool) {
 
       if (typeof is_live !== 'boolean') {
         return res.status(400).json({ error: 'Body must contain { is_live: true | false }' });
+      }
+
+      // Check if projects table exists
+      const { rows: tableExists } = await pool.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'projects' LIMIT 1`,
+      );
+      if (tableExists.length === 0) {
+        return res.status(404).json({ error: 'projects registry table not found in this database' });
       }
 
       const { rows } = await pool.query(
@@ -528,16 +562,17 @@ export function createProjectLiveRouter(pool: Pool) {
       }
 
       const projectName: string = decodeURIComponent(req.params.name);
-      const tableName = projectName.replace(/ /g, '_');
+      const tableNameRaw = projectName.replace(/ /g, '_');
 
-      // Verify table exists
+      // Case-insensitive lookup for Aurora DSQL
       const { rows: tableCheck } = await pool.query(
-        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
-        ['public', tableName],
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND LOWER(table_name) = LOWER($2)',
+        ['public', tableNameRaw],
       );
       if (tableCheck.length === 0) {
         return res.status(404).json({ error: 'No table found for project: ' + projectName });
       }
+      const tableName: string = tableCheck[0].table_name;
 
       // Pick sample or use body override
       const body = req.body as Record<string, string | undefined>;
@@ -584,9 +619,9 @@ export function createProjectLiveRouter(pool: Pool) {
           `INSERT INTO "${tableName}"
              (id, project_name, file_name, timestamp, success_count, failure_count,
               error, error_detail, error_hash, error_status)
-           VALUES (gen_random_uuid(), $1, $2, NOW(), 0, 1, $3, $4, $5, 'open')
+           VALUES ($6, $1, $2, NOW(), 0, 1, $3, $4, $5, 'open')
            RETURNING id, error_status, failure_count`,
-          [projectName, fileName, shortError, errorDetail, errorHash],
+          [projectName, fileName, shortError, errorDetail, errorHash, require('crypto').randomUUID()],
         );
         const r  = insertResult.rows[0];
         action       = 'inserted';

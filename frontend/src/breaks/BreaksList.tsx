@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiFetch } from '../lib/api';
 
 interface BreakRow {
   project_name: string;
@@ -81,7 +82,7 @@ export function BreaksList() {
 
   // Fetch project list from DB
   useEffect(() => {
-    fetch('/api/projects')
+    apiFetch('/api/projects')
       .then(r => r.json())
       .then((rows: { name: string }[]) => setProjects(rows.map(r => r.name).sort()))
       .catch(() => {});
@@ -98,7 +99,7 @@ export function BreaksList() {
       ...(appliedFrom   ? { from:    appliedFrom   } : {}),
       ...(appliedTo     ? { to:      appliedTo     } : {}),
     });
-    fetch(`/api/breaks/grouped?${params}`)
+    apiFetch(`/api/breaks/grouped?${params}`)
       .then(r => r.json())
       .then(d => { if (!cancelled) { setResult(d as BreaksPage); setLoading(false); } })
       .catch(() => { if (!cancelled) setLoading(false); });

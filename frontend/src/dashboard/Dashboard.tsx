@@ -3,6 +3,7 @@ import React from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ResponsiveContainer,
 } from 'recharts';
+import { apiFetch, ApiError } from '../lib/api';
 
 interface ErrorRow {
   project: string;
@@ -103,10 +104,10 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
   // Fetch existing solution on open
   React.useEffect(() => {
     if (!row.error_hash) return;
-    fetch(`/api/error-solution/${encodeURIComponent(row.error_hash)}`)
+    apiFetch(`/api/error-solution/${encodeURIComponent(row.error_hash)}`)
       .then(r => r.json())
       .then(d => {
-        if (d.solution) { setSavedSolution(d.solution); setSolutionText(d.solution); }
+        if ((d as any).solution) { setSavedSolution((d as any).solution); setSolutionText((d as any).solution); }
       })
       .catch(() => {});
   }, [row.error_hash]);
@@ -115,7 +116,7 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
     if (!row.error_hash) return;
     setSaving(true);
     try {
-      await fetch('/api/error-solution', {
+      await apiFetch('/api/error-solution', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ error_hash: row.error_hash, solution: solutionText }),
@@ -123,6 +124,8 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
       setSavedSolution(solutionText);
       setMode('view');
       setResolveError('');
+    } catch (err) {
+      setResolveError(err instanceof ApiError ? err.label : 'Failed to save solution.');
     } finally {
       setSaving(false);
     }
@@ -130,7 +133,11 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
 
   async function handleDelete() {
     if (!row.error_hash) return;
-    await fetch(`/api/error-solution/${encodeURIComponent(row.error_hash)}`, { method: 'DELETE' });
+    try {
+      await apiFetch(`/api/error-solution/${encodeURIComponent(row.error_hash)}`, { method: 'DELETE' });
+    } catch {
+      // best-effort delete
+    }
     setSavedSolution('');
     setSolutionText('');
     setMode('view');
@@ -151,12 +158,14 @@ function ErrorDetailModal({ row, onClose }: { row: ErrorRow; onClose: () => void
     if (!window.confirm(`Mark "${row.error}" in ${row.project} as resolved? It will disappear from the dashboard.`)) return;
     setResolving(true);
     try {
-      await fetch('/api/error-solution/resolve', {
+      await apiFetch('/api/error-solution/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ error_hash: row.error_hash, project_name: row.project }),
       });
       setResolved(true);
+    } catch (err) {
+      setResolveError(err instanceof ApiError ? err.label : 'Failed to resolve error.');
     } finally {
       setResolving(false);
     }
@@ -491,17 +500,17 @@ export function Dashboard() {
   const [topErrorLoading, setTopErrorLoading] = useState(true);
 
   const fetchTopProjects = useCallback(() => {
-    fetch('/api/dashboard/top-projects')
+    apiFetch('/api/dashboard/top-projects')
       .then(r => r.json())
-      .then(d => setTopProjects(d.projects ?? []))
+      .then((d: any) => setTopProjects(d.projects ?? []))
       .catch(() => {})
       .finally(() => setTopLoading(false));
   }, []);
 
   const fetchTopErrorProjects = useCallback(() => {
-    fetch('/api/dashboard/top-error-projects')
+    apiFetch('/api/dashboard/top-error-projects')
       .then(r => r.json())
-      .then(d => setTopErrorProjects(d.projects ?? []))
+      .then((d: any) => setTopErrorProjects(d.projects ?? []))
       .catch(() => {})
       .finally(() => setTopErrorLoading(false));
   }, []);
@@ -519,9 +528,9 @@ export function Dashboard() {
   const [todayDate, setTodayDate] = useState('');
 
   useEffect(() => {
-    fetch('/api/dashboard/today-errors')
+    apiFetch('/api/dashboard/today-errors')
       .then(r => r.json())
-      .then(d => { setTodayErrors(d.errors ?? []); setTodayDate(d.date ?? ''); })
+      .then((d: any) => { setTodayErrors(d.errors ?? []); setTodayDate(d.date ?? ''); })
       .catch(() => {})
       .finally(() => setTodayLoading(false));
   }, []);
@@ -542,8 +551,8 @@ export function Dashboard() {
     setRangeLoading(true);
     setSearched(true);
     try {
-      const r = await fetch(`/api/dashboard/errors?${params}`);
-      const d = await r.json();
+      const r = await apiFetch(`/api/dashboard/errors?${params}`);
+      const d = await r.json() as any;
       setRangeErrors(d.errors ?? []);
     } catch {
       setRangeErrors([]);
