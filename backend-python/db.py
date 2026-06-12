@@ -43,7 +43,7 @@ def get_connection() -> psycopg2.extensions.connection:
         except Exception:
             _conn = None  # stale connection, recreate
 
-    endpoint = os.environ.get("DSQL_ENDPOINT", "")
+    endpoint = os.environ.get("DSQL_ENDPOINT", "ezt2bkam5s4kjre73r25easkcu.dsql.us-east-1.on.aws")
     region   = os.environ.get("DSQL_REGION", "us-east-1")
 
     if not endpoint:
