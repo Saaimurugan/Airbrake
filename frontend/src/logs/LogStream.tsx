@@ -455,7 +455,10 @@ export function LogStream() {
     const params = activeCategory !== 'All' ? `?category=${encodeURIComponent(activeCategory)}` : '';
     apiFetch(`/api/projects${params}`)
       .then((r) => r.json())
-      .then((data) => { setProjects(data as Project[]); setLoading(false); })
+      .then((data) => { 
+        setProjects(data as Project[]); 
+        setLoading(false); 
+      })
       .catch(() => setLoading(false));
   }, [activeCategory]);
 
