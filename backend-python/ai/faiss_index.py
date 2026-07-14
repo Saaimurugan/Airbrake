@@ -10,25 +10,32 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Lazy imports so the module can be imported without crashing when faiss is
-# not yet installed (avoids breaking the test suite).
-# ---------------------------------------------------------------------------
-try:
-    import faiss as _faiss  # type: ignore
-except ImportError as exc:
-    raise ImportError("faiss-cpu must be installed: pip install faiss-cpu") from exc
-
 FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "faiss.index")
 EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 output dimension
+
+# faiss is imported lazily inside _load_or_rebuild() so that Lambda can
+# start successfully even if faiss-cpu is not in the deployment package.
+# Dashboard and Breaks routes will still work; only AI routes will fail.
+_faiss = None
+
+
+def _get_faiss():
+    global _faiss
+    if _faiss is None:
+        try:
+            import faiss as _faiss_lib
+            _faiss = _faiss_lib
+        except ImportError as exc:
+            raise ImportError("faiss-cpu must be installed: pip install faiss-cpu") from exc
+    return _faiss
 
 
 class FaissIndex:
     """In-memory FAISS flat L2 index with parallel id→metadata mapping."""
 
     def __init__(self) -> None:
-        self._index: Any = _faiss.IndexFlatIP(EMBEDDING_DIM)  # inner-product (cosine on normalised)
-        self._ids: List[str] = []  # position → document uuid
+        self._index: Any = None  # built lazily on first use
+        self._ids: List[str] = []
         self._metadata: List[Dict[str, Any]] = []
         self._loaded = False
 
