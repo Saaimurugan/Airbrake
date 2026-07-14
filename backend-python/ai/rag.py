@@ -1,66 +1,59 @@
-"""Retrieval helpers — MongoDB-based retrieval with optional FAISS upgrade."""
+"""Retrieval helpers — DSQL single-table retrieval."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from db import knowledge_base
+from db import query
+
+TABLE = "projects_data"
 
 
 def retrieve_similar_solutions(
-    query: str,
+    query_text: str,
     k: int = 5,
     error_hash: Optional[str] = None,
     project_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieve solutions from MongoDB filtered by error_hash/project_name.
-
-    On the free Render tier we skip FAISS/sentence-transformers entirely to
-    stay within the 512 MB RAM limit.  Solutions are ranked by usage_count
-    and version instead of vector similarity.  The Groq LLM still generates
-    a meaningful recommendation from the top results.
-    """
-    if not query.strip():
+    """Retrieve solutions from projects_data (row_type='solution'),
+    ranked by usage_count and confidence_score."""
+    if not query_text.strip():
         return []
 
-    mongo_filter: Dict[str, Any] = {}
+    conditions = ["row_type = 'solution'"]
+    params: List[Any] = []
+
     if error_hash:
-        mongo_filter["error_hash"] = error_hash
+        conditions.append("error_hash = %s")
+        params.append(error_hash)
+    if project_name:
+        conditions.append("LOWER(project_name) = LOWER(%s)")
+        params.append(project_name)
+
+    where = " AND ".join(conditions)
 
     try:
-        docs = list(
-            knowledge_base.find(mongo_filter)
-            .sort([("usage_count", -1), ("version", -1)])
-            .limit(k)
+        rows = query(
+            f"SELECT id, solution, created_by, created_at, usage_count, "
+            f"confidence_score, version, error_hash, project_name "
+            f"FROM {TABLE} WHERE {where} "
+            f"ORDER BY usage_count DESC, confidence_score DESC, created_at DESC "
+            f"LIMIT %s",
+            tuple(params + [k]),
         )
     except Exception:
         return []
 
-    ranked: List[Dict[str, Any]] = []
-    for doc in docs:
-        doc_id = str(doc.get("id") or doc.get("_id") or "")
-        if not doc_id:
-            continue
-
-        # Optional project filter
-        if project_name:
-            rp = str(doc.get("project_name") or "").strip().lower()
-            if rp and rp != project_name.strip().lower():
-                continue
-
-        usage_count = int(doc.get("usage_count") or 0)
-        version = int(doc.get("version") or 1)
-        updated_at = doc.get("updated_at") or doc.get("created_at")
-        # Pseudo-confidence without a real similarity score
-        confidence = round(min(100.0, 50.0 + (usage_count * 2)), 2)
-
+    ranked = []
+    for row in rows:
+        updated_at = row.get("created_at")
         ranked.append({
-            "id": doc_id,
-            "solution": doc.get("solution", ""),
+            "id": row.get("id"),
+            "solution": row.get("solution", ""),
             "similarity": 50.0,
-            "usage_count": usage_count,
-            "confidence": confidence,
-            "version": version,
+            "usage_count": int(row.get("usage_count") or 0),
+            "confidence": float(row.get("confidence_score") or 50.0),
+            "version": int(row.get("version") or 1),
             "updated_at": (
                 updated_at.isoformat()
                 if hasattr(updated_at, "isoformat")

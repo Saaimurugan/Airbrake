@@ -2,14 +2,11 @@
 Flask application — all API routes.
 Shared between the Lambda handler (lambda_function.py) and local dev.
 
-Architecture: Single-table design using DSQL table 'project_data'
-  - row_type = 'project'    → project metadata (name, category, is_live)
-  - row_type = 'log'        → all logs/errors/results from ALL projects
-  - row_type = 'solution'   → error solutions
-  - row_type = 'alert_rule' → alert rule definitions
-  - row_type = 'alert_history' → triggered alert records
-  - row_type = 'user'       → user accounts
-  - row_type = 'retention'  → retention policies
+Architecture: Single-table design using DSQL table 'projects_data'
+  - row_type = 'project'  → project metadata (name, category, is_live)
+  - row_type = 'log'      → all logs/errors/results from ALL projects
+  - row_type = 'solution' → AI knowledge base (solution versioning)
+  - row_type = 'user'     → user accounts
 """
 
 import os
@@ -21,7 +18,6 @@ import random
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
 from db import query, execute, execute_returning
-from teams import send_teams_alert, test_teams_webhook
 try:
     from ai.recommendations import get_ai_recommendations
     from ai.knowledge_base import (
@@ -125,11 +121,6 @@ def health():
     return jsonify({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
 
 
-@app.route("/api/health/teams")
-def health_teams():
-    return jsonify(test_teams_webhook())
-
-
 @app.route("/api/debug/project-tables")
 def debug_project_tables():
     """Debug endpoint — lists all projects from project_data."""
@@ -138,6 +129,18 @@ def debug_project_tables():
     )
     names = [r["name"] for r in rows]
     return jsonify({"tables": names, "count": len(names)})
+
+
+@app.route("/api/debug/columns")
+def debug_columns():
+    """Debug endpoint — lists all columns in projects_data."""
+    rows = query("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'projects_data'
+        ORDER BY ordinal_position
+    """)
+    return jsonify({"columns": [r["column_name"] for r in rows], "count": len(rows)})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -515,8 +518,6 @@ def ingest_error():
             opt["output_tokens"], opt["calculated_cost"], opt["llm_usage"],
         )
         print(f'[Ingest] ❌ Error row → "{actual_name}" | {error}')
-        send_teams_alert("Error Ingest", "New Error", actual_name, error,
-                         error_detail=opt["error_detail"])
         row = serialize_row(inserted)
         return jsonify({"success": True, "type": "error", **row}), 201
     except Exception as e:
@@ -559,8 +560,7 @@ def ingest_log():
         t = "error" if is_error else "success"
         print(f'[Ingest] {"❌" if is_error else "✅"} {t} row → "{actual_name}"')
         if is_error:
-            send_teams_alert("Log Ingest", "New Error", actual_name, error,
-                             error_detail=opt["error_detail"])
+            print(f'[Ingest] ❌ error row → "{actual_name}" | {error}')
         row = serialize_row(inserted)
         return jsonify({"success": True, "type": t, **row}), 201
     except Exception as e:
@@ -860,27 +860,22 @@ def get_break_detail(error_hash):
             for r in error_rows
         ]
 
-        # Get latest solution from knowledge_base
+        # Get latest solution from projects_data (row_type='solution')
         solution_conditions = [
-            "(pr.error_hash = %s OR MD5(LOWER(TRIM(pr.error))) = %s)"
+            "row_type = 'solution'",
+            "(error_hash = %s OR error_hash IN ("
+            f"  SELECT error_hash FROM {TABLE} WHERE row_type = 'log' "
+            f"  AND MD5(LOWER(TRIM(error))) = %s))",
         ]
         solution_params = [error_hash, error_hash]
         if project_name:
-            solution_conditions.insert(0, "LOWER(pr.project_name) = LOWER(%s)")
-            solution_params.insert(0, project_name)
+            solution_conditions.append("LOWER(project_name) = LOWER(%s)")
+            solution_params.append(project_name)
 
         solution_rows = query(
-            f"""
-            SELECT kb.solution,
-                kb.created_at,
-                kb.created_by
-            FROM knowledge_base kb
-            JOIN projects_data pr
-            ON kb.project_result_id = pr.id
-            WHERE {' AND '.join(solution_conditions)}
-            ORDER BY kb.created_at DESC
-            LIMIT 1
-            """,
+            f"SELECT solution, created_at, created_by "
+            f"FROM {TABLE} WHERE {' AND '.join(solution_conditions)} "
+            f"ORDER BY created_at DESC LIMIT 1",
             tuple(solution_params),
         )
 
@@ -971,117 +966,7 @@ def dashboard_legacy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ALERT RULES & HISTORY
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.route("/api/alert-rules", methods=["GET"])
-def get_alert_rules():
-    try:
-        rows = query(
-            f"SELECT id, rule_name, project_name, alert_type, threshold, "
-            f"window_minutes, is_active, created_at FROM {TABLE} "
-            f"WHERE row_type = 'alert_rule' ORDER BY created_at DESC"
-        )
-        return jsonify(serialize_rows(rows))
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/alert-rules", methods=["POST"])
-def create_alert_rule():
-    body = request.get_json() or {}
-    try:
-        row = execute_returning(
-            f"INSERT INTO {TABLE} (id, row_type, rule_name, project_name, alert_type, "
-            f"threshold, window_minutes, is_active, created_at) "
-            f"VALUES (%s,'alert_rule',%s,%s,%s,%s,%s,%s,NOW()) RETURNING *",
-            (str(uuid.uuid4()), body.get("rule_name"), body.get("project_name"),
-             body.get("alert_type"), body.get("threshold"), body.get("window_minutes"),
-             body.get("is_active", True)),
-        )
-        return jsonify(serialize_row(row)), 201
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/alert-rules/<rule_id>", methods=["PUT"])
-def update_alert_rule(rule_id):
-    body = request.get_json() or {}
-    try:
-        row = execute_returning(
-            f"UPDATE {TABLE} SET rule_name=%s, project_name=%s, alert_type=%s, "
-            f"threshold=%s, window_minutes=%s, is_active=%s "
-            f"WHERE row_type = 'alert_rule' AND id=%s RETURNING *",
-            (body.get("rule_name"), body.get("project_name"), body.get("alert_type"),
-             body.get("threshold"), body.get("window_minutes"), body.get("is_active"), rule_id),
-        )
-        if not row:
-            return jsonify({"error": "Rule not found"}), 404
-        return jsonify(serialize_row(row))
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/alert-rules/<rule_id>/toggle", methods=["PATCH"])
-def toggle_alert_rule(rule_id):
-    try:
-        row = execute_returning(
-            f"UPDATE {TABLE} SET is_active = NOT is_active "
-            f"WHERE row_type = 'alert_rule' AND id=%s RETURNING *",
-            (rule_id,),
-        )
-        if not row:
-            return jsonify({"error": "Rule not found"}), 404
-        return jsonify(serialize_row(row))
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/alert-rules/<rule_id>", methods=["DELETE"])
-def delete_alert_rule(rule_id):
-    try:
-        count = execute(
-            f"DELETE FROM {TABLE} WHERE row_type = 'alert_rule' AND id=%s",
-            (rule_id,),
-        )
-        if count == 0:
-            return jsonify({"error": "Rule not found"}), 404
-        return make_response("", 204)
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/alert-history")
-def get_alert_history():
-    conditions = ["h.row_type = 'alert_history'"]
-    values = []
-    if request.args.get("project"):
-        conditions.append("h.project_name = %s")
-        values.append(request.args["project"])
-    if request.args.get("alert_type"):
-        conditions.append("h.alert_type = %s")
-        values.append(request.args["alert_type"])
-    if request.args.get("from"):
-        conditions.append("h.triggered_at >= %s")
-        values.append(request.args["from"])
-    if request.args.get("to"):
-        conditions.append("h.triggered_at <= %s")
-        values.append(request.args["to"])
-    where = "WHERE " + " AND ".join(conditions)
-    try:
-        rows = query(
-            f"SELECT h.id, h.rule_id, h.rule_name, h.project_name, h.error, "
-            f"h.alert_type, h.triggered_at FROM {TABLE} h {where} "
-            f"ORDER BY h.triggered_at DESC",
-            values if values else None,
-        )
-        return jsonify(serialize_rows(rows))
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ERROR SOLUTIONS
+# ERROR SOLUTIONS / KNOWLEDGE BASE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/knowledge_base/resolve", methods=["POST"])
@@ -1163,16 +1048,10 @@ def get_top_solutions_route():
 def get_error_solution(error_hash):
     try:
         rows = query(
-        """
-        SELECT kb.solution, kb.created_at
-        FROM knowledge_base kb
-        JOIN projects_data pr
-            ON kb.project_result_id = pr.id
-        WHERE pr.row_type = 'log' AND pr.error_hash = %s
-        ORDER BY kb.created_at DESC
-        LIMIT 1
-        """,
-        (error_hash,),
+            f"SELECT solution, created_at "
+            f"FROM {TABLE} WHERE row_type = 'solution' AND error_hash = %s "
+            f"ORDER BY created_at DESC LIMIT 1",
+            (error_hash,),
         )
         if not rows:
             return jsonify({"solution": None})
@@ -1208,10 +1087,7 @@ def upsert_error_solution():
 def delete_error_solution(error_hash):
     try:
         execute(
-            "DELETE FROM knowledge_base "
-            "WHERE project_result_id IN ("
-            "  SELECT id FROM projects_data WHERE row_type = 'log' AND error_hash = %s"
-            ")",
+            f"DELETE FROM {TABLE} WHERE row_type = 'solution' AND error_hash = %s",
             (error_hash,),
         )
         return make_response("", 204)
@@ -1221,7 +1097,7 @@ def delete_error_solution(error_hash):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ADMIN (users + retention) — requires admin token
+# ADMIN (users) — requires admin token
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/users", methods=["GET"])
@@ -1269,47 +1145,5 @@ def delete_user(user_id):
         if count == 0:
             return jsonify({"error": "User not found"}), 404
         return make_response("", 204)
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@app.route("/api/retention", methods=["GET"])
-def get_retention():
-    _, err = require_role("admin")
-    if err:
-        return err
-    try:
-        rows = query(f"SELECT * FROM {TABLE} WHERE row_type = 'retention'")
-        return jsonify(serialize_rows(rows))
-    except Exception:
-        return jsonify([])
-
-
-@app.route("/api/retention", methods=["PUT"])
-def upsert_retention():
-    _, err = require_role("admin")
-    if err:
-        return err
-    body = request.get_json() or {}
-    app_id = body.get("applicationId")
-    days = body.get("retentionDays")
-    try:
-        count = execute(
-            f"UPDATE {TABLE} SET retention_days = %s "
-            f"WHERE row_type = 'retention' AND application_id = %s",
-            (days, app_id),
-        )
-        if count > 0:
-            row = query(
-                f"SELECT * FROM {TABLE} WHERE row_type = 'retention' AND application_id = %s",
-                (app_id,),
-            )[0]
-        else:
-            row = execute_returning(
-                f"INSERT INTO {TABLE} (id, row_type, application_id, retention_days) "
-                f"VALUES (%s,'retention',%s,%s) RETURNING *",
-                (str(uuid.uuid4()), app_id, days),
-            )
-        return jsonify(serialize_row(row))
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
