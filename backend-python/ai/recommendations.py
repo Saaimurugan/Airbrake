@@ -61,14 +61,12 @@ def get_similar_solutions(
         return []
 
     rows = query(
-        f"""
-        SELECT kb.id, kb.solution, kb.created_by, kb.created_at, kb.usage_count,
-               kb.confidence_score, kb.version
-        FROM knowledge_base kb
-        WHERE kb.id = ANY(%s)
-        ORDER BY kb.confidence_score DESC, kb.usage_count DESC, kb.created_at DESC
-        LIMIT %s
-        """,
+        f"SELECT id, solution, created_by, created_at, usage_count, "
+        f"confidence_score, version "
+        f"FROM projects_data "
+        f"WHERE row_type = 'solution' AND id = ANY(%s) "
+        f"ORDER BY confidence_score DESC, usage_count DESC, created_at DESC "
+        f"LIMIT %s",
         (candidate_ids, limit),
     )
     return [_serialize_solution(r) for r in rows]

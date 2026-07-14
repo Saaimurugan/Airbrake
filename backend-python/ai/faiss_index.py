@@ -51,9 +51,9 @@ class FaissIndex:
 
         rows = query(
             """
-            SELECT kb.id, kb.solution, kb.embedding, pr.project_name, pr.error_hash
-            FROM knowledge_base kb
-            JOIN projects_data pr ON kb.project_result_id = pr.id
+            SELECT id, solution, embedding, project_name, error_hash
+            FROM projects_data
+            WHERE row_type = 'solution'
             """
         )
         vectors: List[List[float]] = []
