@@ -5,15 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ResponsiveContainer, Legend,
 } from 'recharts';
 import { apiFetch, ApiError } from '../lib/api';
-
-interface ErrorRow {
-  project: string;
-  file_name: string | null;
-  error: string;
-  error_hash?: string | null;
-  error_detail?: string | null;
-  timestamp: string | null;
-}
+import { ErrorDetailModal, ErrorRow } from '../components/ErrorDetailModal';
 
 interface TopProject {
   project_name: string;
