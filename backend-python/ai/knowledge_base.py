@@ -36,7 +36,7 @@ def _find_solution(solution_id: str) -> Optional[Dict[str, Any]]:
     rows = query(
         "SELECT kb.*, pr.error_hash, pr.project_name FROM knowledge_base kb "
         "JOIN projects_data pr ON kb.project_result_id = pr.id "
-        "WHERE kb.id = %s",
+        "WHERE kb.id = %s AND pr.row_type = 'log'",
         (solution_id,),
     )
     return rows[0] if rows else None

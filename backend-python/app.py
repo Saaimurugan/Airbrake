@@ -22,14 +22,25 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
 from db import query, execute, execute_returning
 from teams import send_teams_alert, test_teams_webhook
-from ai.recommendations import get_ai_recommendations
-from ai.knowledge_base import (
-    delete_solution_version,
-    get_solution_versions,
-    get_top_solutions,
-    increment_usage,
-    insert_solution,
-)
+try:
+    from ai.recommendations import get_ai_recommendations
+    from ai.knowledge_base import (
+        delete_solution_version,
+        get_solution_versions,
+        get_top_solutions,
+        increment_usage,
+        insert_solution,
+    )
+    _AI_AVAILABLE = True
+except Exception as _ai_import_err:
+    print(f"[app] WARNING: AI imports failed — AI features disabled: {_ai_import_err}")
+    _AI_AVAILABLE = False
+    def get_ai_recommendations(*a, **kw): return {"recommendation": None, "solutions": []}
+    def insert_solution(*a, **kw): raise RuntimeError("AI not available")
+    def increment_usage(*a, **kw): raise RuntimeError("AI not available")
+    def get_top_solutions(*a, **kw): return [], 0
+    def get_solution_versions(*a, **kw): return []
+    def delete_solution_version(*a, **kw): return 0
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -1157,7 +1168,7 @@ def get_error_solution(error_hash):
         FROM knowledge_base kb
         JOIN projects_data pr
             ON kb.project_result_id = pr.id
-        WHERE pr.error_hash = %s
+        WHERE pr.row_type = 'log' AND pr.error_hash = %s
         ORDER BY kb.created_at DESC
         LIMIT 1
         """,
