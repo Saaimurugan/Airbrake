@@ -168,6 +168,55 @@ def list_projects():
         return jsonify({"error": "Internal server error"}), 500
 
 
+@app.route("/api/projects", methods=["POST"])
+def create_project():
+    """
+    POST /api/projects
+    Register a new project so it appears in AI Services.
+
+    Body:
+      {
+        "name":     "my_new_project",   ← required
+        "category": "Production",       ← optional, defaults to 'Production'
+        "is_live":  true                ← optional, defaults to true
+      }
+
+    Returns the created project row.
+    If the project already exists, returns the existing row.
+    """
+    body = request.get_json() or {}
+    name = str(body.get("name") or body.get("project_name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    category = str(body.get("category") or "Production").strip()
+    is_live  = body.get("is_live", True)
+    if not isinstance(is_live, bool):
+        is_live = True
+
+    try:
+        # Return existing project if it already exists
+        existing = query(
+            f"SELECT id, project_name AS name, category, is_live FROM {TABLE} "
+            f"WHERE row_type = 'project' AND LOWER(project_name) = LOWER(%s)",
+            (name,),
+        )
+        if existing:
+            return jsonify(serialize_row(existing[0])), 200
+
+        # Insert new project row
+        row = execute_returning(
+            f"INSERT INTO {TABLE} (id, row_type, project_name, category, is_live, created_at) "
+            f"VALUES (%s, 'project', %s, %s, %s, NOW()) RETURNING id, project_name AS name, category, is_live",
+            (str(uuid.uuid4()), name, category, is_live),
+        )
+        print(f"[Projects] New project registered: '{name}' category='{category}'")
+        return jsonify(serialize_row(row)), 201
+    except Exception as e:
+        print(f"[Projects] create error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 @app.route("/api/projects/live")
 def list_live_projects():
     try:
@@ -479,13 +528,24 @@ def _parse_optional(body):
 
 
 def _validate_project(project_name):
-    """Return actual project name if found, else None."""
+    """Return actual project name if found. Auto-registers it if it doesn't exist yet."""
     rows = query(
         f"SELECT project_name AS name FROM {TABLE} "
         f"WHERE row_type = 'project' AND LOWER(project_name) = LOWER(%s)",
         (project_name,),
     )
-    return rows[0]["name"] if rows else None
+    if rows:
+        return rows[0]["name"]
+
+    # Project not found — auto-register it so it appears in AI Services
+    print(f"[Projects] Auto-registering new project: '{project_name}'")
+    execute_returning(
+        f"INSERT INTO {TABLE} (id, row_type, project_name, category, is_live, created_at) "
+        f"VALUES (%s, 'project', %s, 'Production', true, NOW()) "
+        f"ON CONFLICT DO NOTHING RETURNING project_name",
+        (str(uuid.uuid4()), project_name),
+    )
+    return project_name
 
 
 @app.route("/api/ingest/error", methods=["POST"])
@@ -501,9 +561,6 @@ def ingest_error():
         return jsonify({"error": "Invalid error value — workflow/system response passed"}), 400
 
     actual_name = _validate_project(project_name)
-    if not actual_name:
-        return jsonify({"error": f'No project found: "{project_name}"'}), 404
-
     opt = _parse_optional(body)
     error_hash = hashlib.md5(
         f'{error.lower().strip()}:{time.time()}:{random.random()}'.encode()
@@ -533,9 +590,6 @@ def ingest_log():
         return jsonify({"error": "project_name is required"}), 400
 
     actual_name = _validate_project(project_name)
-    if not actual_name:
-        return jsonify({"error": f'No project found: "{project_name}"'}), 404
-
     opt = _parse_optional(body)
     error = str(body.get("error", "")).strip()
     is_workflow = error.startswith("{") and ("workflowId" in error or "workflowStatus" in error)
@@ -576,9 +630,6 @@ def ingest_success():
         return jsonify({"error": "project_name is required"}), 400
 
     actual_name = _validate_project(project_name)
-    if not actual_name:
-        return jsonify({"error": f'No project found: "{project_name}"'}), 404
-
     opt = _parse_optional(body)
     success_count = body.get("success_count", 1)
 
