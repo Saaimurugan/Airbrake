@@ -54,6 +54,8 @@ function BreaksList() {
     const [page, setPage] = (0, react_1.useState)(1);
     const [result, setResult] = (0, react_1.useState)(null);
     const [loading, setLoading] = (0, react_1.useState)(true);
+    const [loadError, setLoadError] = (0, react_1.useState)(null);
+    const [retryTick, setRetryTick] = (0, react_1.useState)(0);
     const [statusFilter, setStatusFilter] = (0, react_1.useState)('');
     const [projectFilter, setProjectFilter] = (0, react_1.useState)('');
     const [projects, setProjects] = (0, react_1.useState)([]);
@@ -61,16 +63,20 @@ function BreaksList() {
     const [toDate, setToDate] = (0, react_1.useState)('');
     const [appliedFrom, setAppliedFrom] = (0, react_1.useState)('');
     const [appliedTo, setAppliedTo] = (0, react_1.useState)('');
-    // Fetch project list from DB
+    // Fetch project list from DB — failure only affects the filter dropdown, not the table
     (0, react_1.useEffect)(() => {
         (0, api_1.apiFetch)('/api/projects')
             .then(r => r.json())
             .then((rows) => setProjects(rows.map(r => r.name).sort()))
-            .catch(() => { });
+            .catch((e) => {
+            console.error('[Breaks] failed to load project list:', e);
+            // Non-fatal: filter dropdown stays empty, table still loads
+        });
     }, []);
     (0, react_1.useEffect)(() => {
         let cancelled = false;
         setLoading(true);
+        setLoadError(null);
         const params = new URLSearchParams({
             page: String(page),
             limit: String(LIMIT),
@@ -81,14 +87,27 @@ function BreaksList() {
         });
         (0, api_1.apiFetch)(`/api/breaks/grouped?${params}`)
             .then(r => r.json())
-            .then(d => { if (!cancelled) {
-            setResult(d);
-            setLoading(false);
-        } })
-            .catch(() => { if (!cancelled)
-            setLoading(false); });
+            .then(d => {
+            if (!cancelled) {
+                // Backend returns { error, data, total } on degraded 500 response
+                if (d.error && !d.data) {
+                    setLoadError(`Failed to load grouped breaks: ${d.error}`);
+                }
+                else {
+                    setResult(d);
+                }
+                setLoading(false);
+            }
+        })
+            .catch((e) => {
+            if (!cancelled) {
+                console.error('[Breaks] grouped fetch failed:', e);
+                setLoadError('Unable to load grouped breaks. Please try again.');
+                setLoading(false);
+            }
+        });
         return () => { cancelled = true; };
-    }, [page, statusFilter, projectFilter, appliedFrom, appliedTo]);
+    }, [page, statusFilter, projectFilter, appliedFrom, appliedTo, retryTick]);
     const totalPages = result ? Math.ceil(result.total / LIMIT) : 1;
     function applyDateFilter() {
         setAppliedFrom(fromDate ? `${fromDate}T00:00:00Z` : '');
@@ -114,7 +133,15 @@ function BreaksList() {
                             padding: '7px 12px', borderRadius: 6, fontSize: 13,
                             background: 'transparent', color: 'var(--text-muted)',
                             border: '1px solid var(--card-border)', cursor: 'pointer',
-                        }, children: "Clear" })), result && ((0, jsx_runtime_1.jsxs)("span", { style: { fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }, children: [result.total, " break", result.total !== 1 ? 's' : '', " found"] }))] }), loading ? ((0, jsx_runtime_1.jsx)("div", { "data-testid": "breaks-loading", style: { padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }, children: "Loading\u2026" })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { style: { background: 'var(--surface)', border: '1px solid var(--card-border)', borderRadius: 8, overflow: 'hidden' }, children: (0, jsx_runtime_1.jsxs)("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 13 }, children: [(0, jsx_runtime_1.jsx)("thead", { children: (0, jsx_runtime_1.jsx)("tr", { style: { background: 'var(--input-bg)' }, children: ['Project', 'Error Message', 'Occurrences', 'First Seen', 'Last Seen', 'Status'].map(h => ((0, jsx_runtime_1.jsx)("th", { style: {
+                        }, children: "Clear" })), result && ((0, jsx_runtime_1.jsxs)("span", { style: { fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }, children: [result.total, " break", result.total !== 1 ? 's' : '', " found"] }))] }), loading ? ((0, jsx_runtime_1.jsx)("div", { "data-testid": "breaks-loading", style: { padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }, children: "Loading\u2026" })) : loadError ? ((0, jsx_runtime_1.jsxs)("div", { style: {
+                    padding: '24px 20px', borderRadius: 8, fontSize: 13, textAlign: 'center',
+                    background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)',
+                    color: '#f87171',
+                }, children: [(0, jsx_runtime_1.jsxs)("div", { style: { marginBottom: 12 }, children: ["\u26A0 ", loadError] }), (0, jsx_runtime_1.jsx)("button", { onClick: () => setRetryTick(t => t + 1), style: {
+                            padding: '6px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                            background: 'rgba(239,68,68,0.15)', color: '#f87171',
+                            border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+                        }, children: "Retry" })] })) : ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("div", { style: { background: 'var(--surface)', border: '1px solid var(--card-border)', borderRadius: 8, overflow: 'hidden' }, children: (0, jsx_runtime_1.jsxs)("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 13 }, children: [(0, jsx_runtime_1.jsx)("thead", { children: (0, jsx_runtime_1.jsx)("tr", { style: { background: 'var(--input-bg)' }, children: ['Project', 'Error Message', 'Occurrences', 'First Seen', 'Last Seen', 'Status'].map(h => ((0, jsx_runtime_1.jsx)("th", { style: {
                                                 padding: '10px 16px', textAlign: 'left', fontWeight: 600,
                                                 color: 'var(--text-muted)', borderBottom: '1px solid var(--card-border)',
                                                 fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, whiteSpace: 'nowrap',
