@@ -1,35 +1,22 @@
-"""Knowledge base helpers — solution versioning, metrics, and Gemini embeddings.
-
-FAISS and SentenceTransformers have been removed.
-Embeddings are now generated via the Gemini Embedding API (ai/embeddings.py).
-Cosine similarity is computed in NumPy (ai/recommendations.py).
-"""
+"""Knowledge base helpers — solution versioning, metrics, and Bedrock embeddings."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from ai.pinecone_service import delete_vector, upsert_vector
 from db import execute, execute_returning, query
 
 
 def _create_embedding_safe(text: str) -> Optional[str]:
-    """Generate a Gemini embedding and return it as a JSON string for the TEXT column.
-
-    Returns None (no embedding stored) if:
-    - ai.embeddings or numpy is unavailable (Lambda package missing)
-    - Gemini API call fails
-    - The result is a zero vector (API key invalid / quota exceeded)
-
-    The solution is always saved regardless — embedding is optional.
-    """
+    """Generate a Titan embedding and return it as a JSON string for the TEXT column."""
     try:
-        from ai.embeddings import create_embedding  # lazy import — numpy optional
-        import json as _json
+        from ai.embeddings import create_embedding
         vec = create_embedding(text)
         if vec and any(v != 0.0 for v in vec):
-            return _json.dumps(vec)
-        print("[KnowledgeBase] embedding skipped — zero vector (Gemini may be unavailable)")
+            return json.dumps(vec)
         return None
     except Exception as exc:
         print(f"[KnowledgeBase] embedding failed — solution will be saved without it: {exc}")
@@ -90,8 +77,6 @@ def insert_solution(
     usage_count   = 1
     confidence    = calculate_confidence(usage_count)
 
-    # Generate embedding — stored as JSON text in Aurora DSQL (embedding col is text)
-    # Gracefully skipped if Gemini is unavailable — solution is always saved
     embedding = _create_embedding_safe(solution)
 
     row = execute_returning(
@@ -113,6 +98,18 @@ def insert_solution(
             embedding,
         ),
     )
+
+    if row and embedding is not None:
+        try:
+            upsert_vector(
+                row["id"],
+                json.loads(embedding),
+                row.get("project_name") or log_row.get("project_name") or "",
+                error_hash,
+                version,
+            )
+        except Exception as exc:
+            print(f"[KnowledgeBase] Pinecone sync failed: {exc}")
     return row
 
 
@@ -135,11 +132,14 @@ def increment_usage(solution_id: str) -> Dict[str, Any]:
 
 
 def delete_solution_version(solution_id: str) -> int:
-    """Delete a single solution version."""
-    return execute(
+    """Delete a single solution version and its Pinecone vector when present."""
+    count = execute(
         f"DELETE FROM {TABLE} WHERE row_type = 'solution' AND id = %s",
         (solution_id,),
     )
+    if count > 0:
+        delete_vector(solution_id)
+    return count
 
 
 def get_top_solutions(

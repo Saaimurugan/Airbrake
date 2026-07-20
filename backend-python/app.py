@@ -17,10 +17,36 @@ import time
 import random
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
-from db import query, execute, execute_returning
+
+try:
+    from db import query, execute, execute_returning
+except Exception as _db_exc:  # pragma: no cover - import safety
+    import traceback as _db_tb_mod
+    _db_import_error = _db_exc
+    _db_import_tb = _db_tb_mod.format_exc()
+    print(f"[app] WARNING: db import failed — using degraded stubs: {type(_db_exc).__name__}: {_db_exc}")
+    print(_db_import_tb)
+
+    def query(*args, **kwargs):
+        raise RuntimeError(f"Database unavailable — component=db error={type(_db_import_error).__name__}: {_db_import_error}")
+
+    def execute(*args, **kwargs):
+        raise RuntimeError(f"Database unavailable — component=db error={type(_db_import_error).__name__}: {_db_import_error}")
+
+    def execute_returning(*args, **kwargs):
+        raise RuntimeError(f"Database unavailable — component=db error={type(_db_import_error).__name__}: {_db_import_error}")
+else:
+    _db_import_error = None
+    _db_import_tb = ""
+
+try:
+    from ai.diagnostics import get_ai_diagnostics
+except Exception as exc:  # pragma: no cover - import safety
+    def get_ai_diagnostics():
+        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
 # ── Knowledge base functions (DB only, no AI runtime required) ────────────────
-# These are always imported directly — they handle Gemini failures internally.
+# These are always imported directly — they handle AI runtime failures internally.
 KB_AVAILABLE = False
 _kb_import_err = None          # always defined — stubs reference this safely
 _kb_import_tb  = ""
@@ -53,7 +79,7 @@ except Exception as _e:
     def get_solution_versions(*a, **kw): return []
     def delete_solution_version(*a, **kw): return 0
 
-# ── AI recommendation (requires Gemini/LLM at runtime, gracefully disabled) ───
+# ── AI recommendation (requires Bedrock/LLM at runtime, gracefully disabled) ───
 AI_RECOMMENDATIONS_AVAILABLE = False
 try:
     from ai.recommendations import get_ai_recommendations
@@ -65,6 +91,20 @@ except Exception as _ai_import_err:
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    import traceback as _tb_mod
+    tb_str = _tb_mod.format_exc()
+    print(f"[app] Unhandled exception — {type(exc).__name__}: {exc}")
+    print(tb_str)
+    return jsonify({
+        "error": "Internal server error",
+        "exception": type(exc).__name__,
+        "message": str(exc),
+        "traceback": tb_str,
+    }), 500
 
 # The single DSQL table used for ALL data
 TABLE = "projects_data"
@@ -137,8 +177,13 @@ def _safe_value(v):
         return v.isoformat()
     if isinstance(v, _decimal.Decimal):
         return float(v)
-    # psycopg2 returns UUIDs as strings already, but guard just in case
-    return v
+    if isinstance(v, (bytes, bytearray)):
+        return v.decode("utf-8", errors="replace")
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    if isinstance(v, (list, dict)):
+        return v
+    return str(v)
 
 
 def serialize_row(row):
@@ -191,7 +236,24 @@ def debug_kb_status():
         "ai_recommendations_available": AI_RECOMMENDATIONS_AVAILABLE,
         "kb_import_error": str(_kb_import_err) if _kb_import_err else None,
         "kb_import_traceback": _kb_import_tb if _kb_import_tb else None,
+        "db_import_error": str(_db_import_error) if _db_import_error else None,
+        "db_import_traceback": _db_import_tb if _db_import_tb else None,
+        "ai_health": get_ai_diagnostics(),
     })
+
+
+@app.route("/api/debug/ai-health")
+def debug_ai_health():
+    """Lightweight diagnostic endpoint for Bedrock, Pinecone, Aurora, and imports."""
+    try:
+        return jsonify(get_ai_diagnostics())
+    except Exception as exc:
+        import traceback as _tb_mod
+        return jsonify({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": _tb_mod.format_exc(),
+        }), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
