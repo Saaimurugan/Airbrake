@@ -1,30 +1,19 @@
-"""AI recommendation pipeline.
+"""AI recommendation pipeline backed by Bedrock embeddings and Nova Lite.
 
-Architecture:
-  1. Generate ONE Gemini embedding for the current error
-  2. Pull candidate solutions from Aurora DSQL (pre-filtered by project / hash)
-  3. Compute cosine similarity with NumPy (no FAISS, no SentenceTransformers)
-  4. Return top-N ranked solutions
-  5. Pass to LLM (Gemini → Groq → LlamaCloud fallback) for a concise recommendation
-
-Frontend payload is unchanged:
-  { recommendation: str | None, solutions: [...] }
+The public response shape remains unchanged so the frontend does not need to change.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ai.embeddings import EMBEDDING_DIM
 from db import query
 
 TABLE = "projects_data"
 
-# EMBEDDING_DIM matches text-embedding-004 output — used for dimension validation
-EMBEDDING_DIM = 768
-
 
 def _get_embeddings():
-    """Lazy import of embeddings module — returns (create_embedding, cosine_similarity) or (None, None)."""
     try:
         from ai.embeddings import create_embedding, cosine_similarity
         return create_embedding, cosine_similarity
@@ -34,7 +23,6 @@ def _get_embeddings():
 
 
 def _get_llm():
-    """Lazy import of LLM module — returns generate_suggested_solution or None."""
     try:
         from ai.llm import generate_suggested_solution
         return generate_suggested_solution
@@ -77,14 +65,13 @@ def _parse_embedding(raw: Any) -> Optional[List[float]]:
     return None
 
 
-def _rank_by_cosine(
+def _rank_candidates(
     query_vec: List[float],
     candidates: List[Dict[str, Any]],
     limit: int,
     cosine_similarity_fn: Any,
 ) -> List[Dict[str, Any]]:
-    """Rank candidates by cosine similarity to query_vec."""
-    scored: List[tuple[float, Dict[str, Any]]] = []
+    scored: List[tuple[float, float, float, int, Dict[str, Any]]] = []
     unscored: List[Dict[str, Any]] = []
 
     for row in candidates:
@@ -92,14 +79,17 @@ def _rank_by_cosine(
         if emb and len(emb) == EMBEDDING_DIM:
             try:
                 sim = cosine_similarity_fn(query_vec, emb)
-                scored.append((sim, row))
+                confidence = float(row.get("confidence_score") or 0.0) / 100.0
+                usage = min(int(row.get("usage_count") or 0), 20) / 20.0
+                combined = (sim * 0.7) + (confidence * 0.2) + (usage * 0.1)
+                scored.append((combined, sim, confidence, usage, row))
             except Exception:
                 unscored.append(row)
         else:
             unscored.append(row)
 
-    scored.sort(key=lambda t: t[0], reverse=True)
-    ranked = [row for _, row in scored] + unscored
+    scored.sort(key=lambda item: item[0], reverse=True)
+    ranked = [row for _, _, _, _, row in scored] + unscored
     return ranked[:limit]
 
 
@@ -115,56 +105,58 @@ def get_similar_solutions(
     """
     create_embedding, cosine_similarity = _get_embeddings()
 
-    # ── 1. Fetch error text ──────────────────────────────────────────────────
-    conditions = ["row_type = 'log'",
-                  "(error_hash = %s OR MD5(LOWER(TRIM(error))) = %s)"]
-    params: List[Any] = [error_hash, error_hash]
-    if project_name:
-        conditions.insert(0, "LOWER(project_name) = LOWER(%s)")
-        params.insert(0, project_name)
+    try:
+        # ── 1. Fetch error text ──────────────────────────────────────────────────
+        conditions = ["row_type = 'log'",
+                      "(error_hash = %s OR MD5(LOWER(TRIM(error))) = %s)"]
+        params: List[Any] = [error_hash, error_hash]
+        if project_name:
+            conditions.insert(0, "LOWER(project_name) = LOWER(%s)")
+            params.insert(0, project_name)
 
-    error_rows = query(
-        f"SELECT error AS error_message, error_detail "
-        f"FROM {TABLE} "
-        f"WHERE {' AND '.join(conditions)} "
-        f"LIMIT 1",
-        tuple(params),
-    )
-    if not error_rows:
+        error_rows = query(
+            f"SELECT error AS error_message, error_detail "
+            f"FROM {TABLE} "
+            f"WHERE {' AND '.join(conditions)} "
+            f"LIMIT 1",
+            tuple(params),
+        )
+        if not error_rows:
+            return []
+
+        error_text  = (error_rows[0].get("error_message") or "")
+        detail_text = (error_rows[0].get("error_detail") or "")
+        query_text  = f"{error_text}\n\n{detail_text}".strip() or error_text
+
+        # ── 3. Pull candidates from projects_data (SQL pre-filter, up to 50) ────
+        sol_conditions: List[str] = ["row_type = 'solution'", "error_hash = %s"]
+        sol_params: List[Any] = [error_hash]
+        if project_name:
+            sol_conditions.append("LOWER(project_name) = LOWER(%s)")
+            sol_params.append(project_name)
+
+        candidates = query(
+            f"SELECT id, solution, created_by, created_at, "
+            f"usage_count, confidence_score, version, embedding "
+            f"FROM {TABLE} "
+            f"WHERE {' AND '.join(sol_conditions)} "
+            f"ORDER BY confidence_score DESC, usage_count DESC, created_at DESC "
+            f"LIMIT 50",
+            tuple(sol_params),
+        )
+    except Exception as exc:
+        print(f"[Recommendations] Aurora lookup failed — returning empty recommendations: {exc}")
         return []
-
-    error_text  = (error_rows[0].get("error_message") or "")
-    detail_text = (error_rows[0].get("error_detail") or "")
-    query_text  = f"{error_text}\n\n{detail_text}".strip() or error_text
-
-    # ── 3. Pull candidates from projects_data (SQL pre-filter, up to 50) ────
-    sol_conditions: List[str] = ["row_type = 'solution'"]
-    sol_params: List[Any] = []
-    if project_name:
-        sol_conditions.append("LOWER(project_name) = LOWER(%s)")
-        sol_params.append(project_name)
-
-    candidates = query(
-        f"SELECT id, solution, created_by, created_at, "
-        f"usage_count, confidence_score, version, embedding "
-        f"FROM {TABLE} "
-        f"WHERE {' AND '.join(sol_conditions)} "
-        f"ORDER BY confidence_score DESC, usage_count DESC, created_at DESC "
-        f"LIMIT 50",
-        tuple(sol_params) if sol_params else None,
-    )
 
     if not candidates:
         return []
 
-    # ── 2 + 4. Generate embedding and re-rank by cosine similarity ────────────
-    # If embeddings unavailable, skip cosine ranking — return SQL-ranked order
     if create_embedding and cosine_similarity:
         try:
             query_vec = create_embedding(query_text)
-            ranked = _rank_by_cosine(query_vec, candidates, limit, cosine_similarity)
+            ranked = _rank_candidates(query_vec, candidates, limit, cosine_similarity)
         except Exception as exc:
-            print(f"[Recommendations] cosine ranking failed, using SQL order: {exc}")
+            print(f"[Recommendations] semantic ranking failed, using Aurora order: {exc}")
             ranked = candidates[:limit]
     else:
         ranked = candidates[:limit]
@@ -180,27 +172,31 @@ def get_ai_recommendations(
 
     Payload shape is unchanged — frontend requires no update.
     """
-    solutions = get_similar_solutions(error_hash, project_name, limit=10)
-    if not solutions:
+    try:
+        solutions = get_similar_solutions(error_hash, project_name, limit=10)
+        if not solutions:
+            return {"recommendation": None, "solutions": []}
+
+        # Fetch error text for the LLM prompt
+        error_rows = query(
+            f"SELECT error AS error_message, error_detail "
+            f"FROM {TABLE} "
+            f"WHERE row_type = 'log' AND error_hash = %s "
+            f"LIMIT 1",
+            (error_hash,),
+        )
+        prompt = (error_rows[0].get("error_message") if error_rows else "") or ""
+        detail = (error_rows[0].get("error_detail") if error_rows else "") or ""
+        if detail:
+            prompt = f"{prompt}\n\nDetails:\n{detail}".strip()
+
+        # LLM fallback chain — lazy import, gracefully returns None if unavailable
+        generate_suggested_solution = _get_llm()
+        if generate_suggested_solution:
+            recommendation = generate_suggested_solution(prompt, solutions[:5])
+        else:
+            recommendation = None
+        return {"recommendation": recommendation, "solutions": solutions}
+    except Exception as exc:
+        print(f"[Recommendations] recommendation generation failed — returning empty payload: {exc}")
         return {"recommendation": None, "solutions": []}
-
-    # Fetch error text for the LLM prompt
-    error_rows = query(
-        f"SELECT error AS error_message, error_detail "
-        f"FROM {TABLE} "
-        f"WHERE row_type = 'log' AND error_hash = %s "
-        f"LIMIT 1",
-        (error_hash,),
-    )
-    prompt = (error_rows[0].get("error_message") if error_rows else "") or ""
-    detail = (error_rows[0].get("error_detail") if error_rows else "") or ""
-    if detail:
-        prompt = f"{prompt}\n\nDetails:\n{detail}".strip()
-
-    # LLM fallback chain — lazy import, gracefully returns None if unavailable
-    generate_suggested_solution = _get_llm()
-    if generate_suggested_solution:
-        recommendation = generate_suggested_solution(prompt, solutions[:5])
-    else:
-        recommendation = None
-    return {"recommendation": recommendation, "solutions": solutions}

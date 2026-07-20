@@ -29,5 +29,5 @@ def ingest_solution(solution_record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def delete_from_index(doc_id: str) -> None:
-    """No-op — FAISS index is rebuilt from projects_data on demand."""
+    """No-op — semantic index refresh is handled by the Bedrock/Pinecone path when available."""
     pass

@@ -15,6 +15,7 @@ Handler setting in Lambda console:
 """
 
 import asyncio
+import traceback
 
 # Python 3.14 removed the implicit auto-creation of an event loop in
 # asyncio.get_event_loop() when called from the main thread with no
@@ -25,15 +26,56 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from mangum import Mangum
-from asgiref.wsgi import WsgiToAsgi
-from app import app
+from flask import Flask, jsonify
+
+try:
+    from mangum import Mangum
+except Exception as exc:  # pragma: no cover - import safety
+    Mangum = None  # type: ignore
+    _MANGUM_IMPORT_ERROR = exc
+else:
+    _MANGUM_IMPORT_ERROR = None
+
+try:
+    from asgiref.wsgi import WsgiToAsgi
+except Exception as exc:  # pragma: no cover - import safety
+    WsgiToAsgi = None  # type: ignore
+    _WSGI_IMPORT_ERROR = exc
+else:
+    _WSGI_IMPORT_ERROR = None
+
+
+def _build_fallback_app():
+    fallback_app = Flask(__name__)
+
+    @fallback_app.route("/api/health")
+    def health():
+        return jsonify({"status": "degraded", "message": "backend import failed; AI functionality disabled"})
+
+    @fallback_app.route("/api/debug/ai-health")
+    def ai_health():
+        return jsonify({"status": "degraded", "error": "backend import failed"})
+
+    return fallback_app
+
+
+try:
+    from app import app as _flask_app
+except Exception as exc:
+    print(f"[lambda] app import failed — falling back to degraded startup: {type(exc).__name__}: {exc}")
+    print(traceback.format_exc())
+    app = _build_fallback_app()
+else:
+    app = _flask_app
 
 # -- Main HTTP handler ----------------------------------------------------
 # Flask is a WSGI app. Mangum 0.19 expects an ASGI app, so wrap Flask
 # with asgiref's WsgiToAsgi adapter before passing it to Mangum.
-_asgi_app = WsgiToAsgi(app)
-_mangum = Mangum(_asgi_app, lifespan="off")
+if WsgiToAsgi is not None and Mangum is not None:
+    _asgi_app = WsgiToAsgi(app)
+    _mangum = Mangum(_asgi_app, lifespan="off")
+else:
+    _mangum = None
 
 
 def lambda_handler(event, context):
@@ -45,6 +87,17 @@ def lambda_handler(event, context):
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
+    if _mangum is None:
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": jsonify({
+                "status": "degraded",
+                "message": "Lambda adapter unavailable",
+                "mangum_error": str(_MANGUM_IMPORT_ERROR) if _MANGUM_IMPORT_ERROR else None,
+                "wsgi_error": str(_WSGI_IMPORT_ERROR) if _WSGI_IMPORT_ERROR else None,
+            }).get_data(as_text=True),
+        }
     return _mangum(event, context)
 
 

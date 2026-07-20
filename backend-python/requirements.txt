@@ -9,6 +9,4 @@ python-dotenv==1.0.1
 requests==2.32.3
 
 # AI dependencies
-google-generativeai==0.8.3
-groq==1.5.0
-numpy>=1.25
+pinecone>=5.0.0

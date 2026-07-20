@@ -1,11 +1,14 @@
 name: Build and Deploy (FE to S3 & BE to Lambda)
+
 on:
   push:
     branches:
       - main
+
 env:
   AWS_REGION: us-east-1
   LAMBDA_FUNCTION_NAME: airbrake-backend
+
 jobs:
   # ==========================================
   # FRONTEND DEPLOYMENT TO AWS S3
@@ -18,47 +21,133 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: "20"
+
       - name: Install Frontend dependencies
         run: npm install
+
       - name: Build Frontend
         run: npm run build
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
       - name: Sync files to S3 bucket
         run: |
           aws s3 sync ./dist s3://airbrake --delete
+
   # ==========================================
   # BACKEND DEPLOYMENT TO AWS LAMBDA
   # ==========================================
   deploy-backend:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Python 3.14
+      # ── Python 3.12 — best compatibility with psycopg2, pinecone, numpy, boto3 ──
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
 
-      - name: Package Lambda
+      # ── Diagnostics ──────────────────────────────────────────────────────────
+      - name: Print environment info
+        run: |
+          python --version
+          python -m pip --version
+
+      # ── Install dependencies into ./package ──────────────────────────────────
+      # Failure here stops the workflow — Lambda is never updated.
+      - name: Install Python dependencies
         working-directory: ./backend-python
         run: |
-          zip -r ../lambda.zip \
-            lambda_function.py \
-            app.py \
-            db.py \
-            teams.py \
-            alert_engine.py
-          echo "Zip size: $(du -sh ../lambda.zip | cut -f1)"
+          python -m pip install --upgrade pip
+          mkdir -p package
+          pip install \
+            --requirement requirements.txt \
+            --target ./package \
+            --no-cache-dir
+          echo "--- Installed packages ---"
+          pip list
+
+      # ── Copy complete backend source into ./package ───────────────────────────
+      # Copies all .py files, the full ai/ directory, and any other source.
+      # Failure here stops the workflow — Lambda is never updated.
+      - name: Copy backend source into package
+        working-directory: ./backend-python
+        run: |
+          # Root-level Python files
+          cp app.py             package/
+          cp db.py              package/
+          cp lambda_function.py package/
+
+          # Complete ai/ package (knowledge_base, recommendations, embeddings, llm, etc.)
+          cp -r ai/ package/ai/
+
+          # Verify ai/ made it in with all expected modules
+          echo "--- Contents of package/ai/ ---"
+          ls -la package/ai/
+
+          # Fail explicitly if any critical file is missing
+          for f in \
+            package/app.py \
+            package/db.py \
+            package/lambda_function.py \
+            package/ai/__init__.py \
+            package/ai/knowledge_base.py \
+            package/ai/recommendations.py \
+            package/ai/embeddings.py \
+            package/ai/llm.py \
+            package/ai/bedrock_embeddings.py \
+            package/ai/bedrock_llm.py \
+            package/ai/pinecone_service.py \
+            package/ai/diagnostics.py; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              exit 1
+            else
+              echo "OK: $f"
+            fi
+          done
+
+      # ── Create lambda.zip from the package directory ──────────────────────────
+      # Failure here stops the workflow — Lambda is never updated.
+      - name: Create lambda.zip
+        working-directory: ./backend-python
+        run: |
+          cd package
+          zip -r ../../lambda.zip . \
+            --exclude "*/__pycache__/*" \
+            --exclude "*/*.pyc" \
+            --exclude "*/.git/*" \
+            --exclude "*/.env"
+          cd ..
+
+          echo "--- Zip size ---"
+          du -sh ../lambda.zip
+
+          echo "--- Verifying ai/ exists inside lambda.zip ---"
+          unzip -l ../lambda.zip | grep "^.*ai/" | head -20
+
+          # Fail if ai/ directory is not present in the zip
+          if ! unzip -l ../lambda.zip | grep -q "ai/"; then
+            echo "ERROR: ai/ directory not found in lambda.zip"
+            exit 1
+          fi
+
+          echo "--- ai/ verified inside lambda.zip ---"
+
+      # ── Configure AWS credentials ─────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -66,14 +155,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # ── Deploy to Lambda — only reached if all previous steps passed ──────────
       - name: Deploy to Lambda
         run: |
           aws lambda update-function-code \
-            --function-name $LAMBDA_FUNCTION_NAME \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
             --zip-file fileb://lambda.zip
-      - name: Wait for update to complete
+
+      - name: Wait for Lambda update to complete
         run: |
           aws lambda wait function-updated \
-            --function-name $LAMBDA_FUNCTION_NAME
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
       - name: Done
-        run: echo "Backend deployed successfully!"
+        run: echo "Backend deployed successfully to Lambda!"
