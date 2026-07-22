@@ -137,6 +137,7 @@ def handle_unexpected_error(exc):
 
 # The single DSQL table used for ALL data
 TABLE = "projects_data"
+DEBUG_BREAK_DETAIL = str(os.getenv("DEBUG_BREAK_DETAIL", "true")).strip().lower() in ("1", "true", "yes", "on")
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 ALLOWED_ORIGINS = {
@@ -1030,10 +1031,21 @@ def get_break_detail(error_hash):
     request_id = g.get("request_id", "unknown")
     try:
         project_name = (request.args.get('project_name') or '').strip() or None
-        
+        stage = "route_entered"
+        debug_info = {
+            "error_hash": error_hash,
+            "project_name": project_name,
+            "debug_enabled": DEBUG_BREAK_DETAIL,
+            "stage": stage,
+        }
+
         print(f"[req:{request_id}] [Breaks:detail] TRACE START")
         print(f"[req:{request_id}] [Breaks:detail] URL error_hash={repr(error_hash)}")
         print(f"[req:{request_id}] [Breaks:detail] query_param project_name={repr(project_name)}")
+
+        stage = "parsed_project"
+        debug_info["stage"] = stage
+        debug_info["project_name"] = project_name
 
         # Get grouped error info
         conditions = [
@@ -1042,7 +1054,22 @@ def get_break_detail(error_hash):
             "error <> ''",
         ]
         params = []
-        hash_candidates = build_error_hash_candidates(error_hash, None)
+        try:
+            hash_candidates = build_error_hash_candidates(error_hash, None)
+            debug_info["hash_candidates"] = hash_candidates
+            debug_info["hash_helper_type"] = str(type(build_error_hash_candidates))
+            debug_info["hash_helper_module"] = getattr(build_error_hash_candidates, "__module__", None)
+            debug_info["hash_helper_callable"] = callable(build_error_hash_candidates)
+            stage = "generated_hash_candidates"
+            debug_info["stage"] = stage
+        except Exception as exc:
+            debug_info["stage"] = "hash_generation_failed"
+            debug_info["hash_candidate_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            raise
+
         print(f"[req:{request_id}] [Breaks:detail] hash_candidates={hash_candidates}")
         
         if hash_candidates is None:
@@ -1053,19 +1080,29 @@ def get_break_detail(error_hash):
         
         if error_hash:
             hash_clauses = []
-            for candidate in lookup_hashes:
+            for idx, candidate in enumerate(hash_candidates):
                 hash_clauses.append("error_hash = %s")
                 params.append(candidate)
                 print(f"[req:{request_id}] [Breaks:detail] Added hash candidate[{idx}]={repr(candidate)}")
+            # Preserve compatibility with older rows that may not have an error_hash value
+            # but still match via the normalized MD5 of the raw error text.
+            hash_clauses.append("MD5(LOWER(TRIM(error))) = %s")
+            params.append(error_hash)
             if hash_clauses:
                 conditions.append(f"({' OR '.join(hash_clauses)})")
                 print(f"[req:{request_id}] [Breaks:detail] Added hash condition with {len(hash_clauses)} candidates")
+
         if project_name:
             conditions.insert(0, "LOWER(project_name) = LOWER(%s)")
             params.insert(0, project_name)
             print(f"[req:{request_id}] [Breaks:detail] Inserted project_name at params[0]={repr(project_name)}")
 
         where_clause = ' AND '.join(conditions)
+        debug_info["conditions"] = conditions
+        debug_info["params"] = tuple(params)
+        debug_info["param_count"] = len(params)
+        stage = "built_sql"
+        debug_info["stage"] = stage
         print(f"[req:{request_id}] [Breaks:detail] WHERE clause: {where_clause}")
         print(f"[req:{request_id}] [Breaks:detail] Parameters tuple: {tuple(params)}")
         print(f"[req:{request_id}] [Breaks:detail] Param count: {len(params)}")
@@ -1077,16 +1114,20 @@ def get_break_detail(error_hash):
             f"WHERE {where_clause} "
             "ORDER BY timestamp DESC"
         )
+        debug_info["sql"] = sql
         print(f"[req:{request_id}] [Breaks:detail] Full SQL:\n{sql}")
-        
+        debug_info["stage"] = "executing_query"
         error_rows = query(sql, tuple(params))
-        
+        debug_info["row_count"] = len(error_rows) if error_rows else 0
+        debug_info["first_row"] = serialize_row(error_rows[0]) if error_rows else None
+        debug_info["first_row_keys"] = list(error_rows[0].keys()) if error_rows else []
         print(f"[req:{request_id}] [Breaks:detail] Query returned {len(error_rows) if error_rows else 0} rows")
         if error_rows:
             for i, row in enumerate(error_rows[:3]):
                 print(f"[req:{request_id}] [Breaks:detail] Row[{i}]: error_hash={row.get('error_hash')}, project_name={row.get('project_name')}, error={row.get('error_message', '')[:50]}")
         
         if not error_rows:
+            debug_info["stage"] = "query_returned_zero_rows"
             print(f"[req:{request_id}] [Breaks:detail] ZERO ROWS - Testing conditions individually")
             # Test each condition to find the culprit
             test_conditions = [
@@ -1094,26 +1135,42 @@ def get_break_detail(error_hash):
                 ("no row_type filter", ["error IS NOT NULL", "error <> ''"], []),
                 ("with error_hash candidates", conditions[:4] if len(conditions) > 4 else conditions, params[:1] if params else []),
             ]
+            test_debug = []
             for test_name, test_conds, test_params in test_conditions:
                 test_where = ' AND '.join(test_conds)
                 test_sql = f"SELECT COUNT(*) as cnt FROM {TABLE} WHERE {test_where}"
                 print(f"[req:{request_id}] [Breaks:detail] TEST[{test_name}]: {test_sql}")
                 try:
                     result = query(test_sql, tuple(test_params))
-                    if result:
-                        cnt = result[0].get('cnt', 0)
-                        print(f"[req:{request_id}] [Breaks:detail] TEST[{test_name}] returned {cnt} rows")
+                    cnt = result[0].get('cnt', 0) if result else 0
+                    print(f"[req:{request_id}] [Breaks:detail] TEST[{test_name}] returned {cnt} rows")
+                    test_debug.append({
+                        "name": test_name,
+                        "sql": test_sql,
+                        "params": tuple(test_params),
+                        "count": cnt,
+                    })
                 except Exception as e:
                     print(f"[req:{request_id}] [Breaks:detail] TEST[{test_name}] ERROR: {e}")
-            return jsonify({"error": "Not Found", "message": "Error not found."}), 404
+                    test_debug.append({
+                        "name": test_name,
+                        "sql": test_sql,
+                        "params": tuple(test_params),
+                        "error": str(e),
+                    })
+            debug_info["zero_row_tests"] = test_debug
+            response_body = {"error": "Not Found", "message": "Error not found.", "reason": "query_returned_zero_rows"}
+            if DEBUG_BREAK_DETAIL:
+                response_body["debug"] = debug_info
+            return jsonify(response_body), 404
 
         first = error_rows[0]
         occurrence_count = sum(r.get("failure_count", 1) for r in error_rows)
-        first_seen = min(r["timestamp"] for r in error_rows if r.get("timestamp"))
-        last_seen = max(
-            max((r["timestamp"] for r in error_rows if r.get("timestamp")), default=None),
-            max((r["reopened_at"] for r in error_rows if r.get("reopened_at")), default=None),
-        )
+        timestamps = [r.get("timestamp") for r in error_rows if r.get("timestamp") is not None]
+        first_seen = min(timestamps) if timestamps else None
+        reopened_ts = [r.get("reopened_at") for r in error_rows if r.get("reopened_at") is not None]
+        all_ts = timestamps + reopened_ts
+        last_seen = max(all_ts) if all_ts else None
         file_name = next((r.get("file_name") for r in error_rows if r.get("file_name")), first.get("file_name"))
 
         has_reopened = any(r.get("error_status") == "reopened" for r in error_rows)
@@ -1173,13 +1230,19 @@ def get_break_detail(error_hash):
                 }
         except Exception as e:
             print(f"[Breaks] solution query error: {e}")
+            debug_info["solution_stage"] = "solution_query_failed"
+            debug_info["solution_error"] = {"type": type(e).__name__, "message": str(e)}
             solution_error = f"Failed to load solution: {str(e)}"
 
         ai_recommendation = None
         try:
+            debug_info["solution_stage"] = "loading_ai"
             ai_recommendation = get_ai_recommendations(error_hash, project_name)
+            debug_info["ai_stage"] = "ai_executed"
         except Exception as e:
             print(f"[Breaks] ai recommendation error: {e}")
+            debug_info["ai_stage"] = "ai_exception"
+            debug_info["ai_error"] = {"type": type(e).__name__, "message": str(e)}
 
         result = {
             "project_name": first["project_name"],
@@ -1196,7 +1259,22 @@ def get_break_detail(error_hash):
             "solution_error": solution_error,
             "ai_recommendation": ai_recommendation,
         }
-        return jsonify(serialize_row(result))
+        stage = "serializing_response"
+        debug_info["stage"] = stage
+        debug_info["returned_hashes"] = [r.get("error_hash") for r in error_rows[:3]]
+        debug_info["returned_projects"] = [r.get("project_name") for r in error_rows[:3]]
+        debug_info["returned_statuses"] = [r.get("error_status") for r in error_rows[:3]]
+        response = jsonify(serialize_row(result))
+        if DEBUG_BREAK_DETAIL:
+            try:
+                response_data = result.copy()
+                response_data["debug"] = debug_info
+                return jsonify(serialize_row(response_data))
+            except Exception as e:
+                debug_info["stage"] = "debug_serialization_failed"
+                debug_info["debug_serialization_error"] = {"type": type(e).__name__, "message": str(e)}
+                return jsonify(result)
+        return response
     except Exception as e:
         import traceback as _tb
         tb_str = _tb.format_exc()
@@ -1204,11 +1282,14 @@ def get_break_detail(error_hash):
         print(f"[req:{request_id}] [Breaks:detail] ERROR: {type(e).__name__}: {e}")
         print(f"[req:{request_id}] [Breaks:detail] error_hash={error_hash} project_name={project_name}")
         print(f"[req:{request_id}] [Breaks:detail] Traceback:\n{tb_str}")
-        return jsonify({
+        response_body = {
             "error": "Not Found",
             "message": "Error not found or failed to load.",
             "trace_id": request_id,
-        }), 404
+        }
+        if DEBUG_BREAK_DETAIL:
+            response_body["debug"] = debug_info
+        return jsonify(response_body), 404
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
