@@ -48,7 +48,7 @@ except Exception as exc:  # pragma: no cover - import safety
 
 _error_matching_import_err = None
 try:
-    from ai.error_matching import build_error_hash_candidates, derive_error_hash, normalize_project_name
+    from ai.error_matching import build_error_hash_candidates, build_lookup_hash_candidates, derive_error_hash, normalize_project_name
 except Exception as exc:  # pragma: no cover - import safety
     _error_matching_import_err = exc
     print(f"[app] WARNING: ai.error_matching import failed: {type(exc).__name__}: {exc}")
@@ -1053,8 +1053,8 @@ def get_break_detail(error_hash):
         
         if error_hash:
             hash_clauses = []
-            for idx, candidate in enumerate(hash_candidates):
-                hash_clauses.append(f"error_hash = %s")
+            for candidate in lookup_hashes:
+                hash_clauses.append("error_hash = %s")
                 params.append(candidate)
                 print(f"[req:{request_id}] [Breaks:detail] Added hash candidate[{idx}]={repr(candidate)}")
             if hash_clauses:
